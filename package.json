@@ -4,7 +4,9 @@
   "description": "VEGA — мануальный обменник BTC/LTC: TG Web App + админ-бот",
   "main": "index.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test",
+    "check": "node --check src/bot.js && node --check src/web.js && node --check public/app.js"
   },
   "engines": {
     "node": ">=18"
@@ -23,5 +25,8 @@
   "dependencies": {
     "express": "^5.2.1",
     "grammy": "^1.46.0"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
   }
 }

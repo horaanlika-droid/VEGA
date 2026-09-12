@@ -30,10 +30,16 @@ function resolvePort() {
 }
 
 const listen = resolvePort();
+const adminIds = [...new Set([process.env.ADMIN_ID, process.env.ADMIN_IDS]
+  .filter(Boolean).join(',').split(/[,;\s]+/).filter(Boolean))];
+if (adminIds.some((id) => !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id)))) {
+  throw new Error('ADMIN_ID / ADMIN_IDS должны содержать положительные Telegram ID, разделённые запятыми.');
+}
 
 module.exports = {
   botToken: (process.env.BOT_TOKEN || '').trim(),
-  adminId: (process.env.ADMIN_ID || '').trim(),
+  adminId: (process.env.ADMIN_ID || '').trim(), // совместимость со старыми сообщениями
+  adminIds,
   port: listen.port,
   portSource: listen.source,
   host: '0.0.0.0',

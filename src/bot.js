@@ -2,12 +2,13 @@ const { Bot, InlineKeyboard } = require('grammy');
 const config = require('./config');
 const store = require('./store');
 const bus = require('./bus');
-const { esc, fmtRub, fmtCrypto, fmtDate, plural, parseNum } = require('./util');
+const admins = require('./admins');
+const { esc, fmtRub, fmtCrypto, fmtDate, parseNum } = require('./util');
 
 let bot = null;
 const flows = new Map(); // adminId -> { type, orderId? }
 
-const isAdmin = (ctx) => !!config.adminId && String(ctx.from && ctx.from.id) === String(config.adminId);
+const isAdmin = (ctx) => ctx.chat?.type === 'private' && admins.has(ctx.from?.id);
 
 const STATUS_LABEL = {
   new: '🔍 Идёт подбор реквизитов',
@@ -55,42 +56,74 @@ function orderKb(o) {
   return kb;
 }
 
-async function sendOrUpdateOrderAdmin(o) {
-  if (!bot || !config.adminId) return;
-  const opts = { parse_mode: 'HTML', reply_markup: orderKb(o) };
-  if (o.adminMsgId) {
-    try {
-      await bot.api.editMessageText(config.adminId, o.adminMsgId, orderText(o), opts);
-      return;
-    } catch {
-      /* упадёт, если сообщение старое — отправим новое */
-    }
-  }
+// Очередь на заявку: более старый сетевой ответ не должен затереть новую карточку.
+const orderQueues = new Map();
+function sendOrUpdateOrderAdmin(order) {
+  const previous = orderQueues.get(order.id) || Promise.resolve();
+  const task = previous.catch(() => {}).then(async () => {
+    if (!bot) return;
+    await Promise.all(admins.all().map(async (adminId) => {
+      const o = store.getOrder(order.id);
+      if (!o || !admins.has(adminId)) return;
+      const opts = { parse_mode: 'HTML', reply_markup: orderKb(o) };
+      const messageId = o.adminMsgIds?.[adminId] ||
+        (adminId === config.adminId ? o.adminMsgId : null);
+      if (messageId) {
+        try {
+          await bot.api.editMessageText(adminId, messageId, orderText(o), opts);
+          return;
+        } catch (e) {
+          if (/message is not modified/i.test(e.description || e.message)) return;
+          // Удалённую/недоступную для редактирования карточку отправим заново.
+        }
+      }
+      try {
+        const m = await bot.api.sendMessage(adminId, orderText(o), opts);
+        store.mutate(() => {
+          (o.adminMsgIds ||= {})[adminId] = m.message_id;
+        });
+      } catch (e) {
+        console.error(`[bot] order #${o.id} → admin ${adminId}:`, e.message);
+      }
+    }));
+  });
+  orderQueues.set(order.id, task);
+  task.finally(() => {
+    if (orderQueues.get(order.id) === task) orderQueues.delete(order.id);
+  }).catch(() => {});
+  return task;
+}
+
+async function broadcast(text, options = {}) {
+  if (!bot) return;
+  await Promise.all(admins.all().map(async (id) => {
+    try { await bot.api.sendMessage(id, text, options); }
+    catch (e) { console.error(`[bot] admin ${id}:`, e.message); }
+  }));
+}
+
+async function notifyClient(o) {
   try {
-    const m = await bot.api.sendMessage(config.adminId, orderText(o), opts);
-    store.updateOrder(o.id, { adminMsgId: m.message_id });
+    await bot.api.sendMessage(o.userId,
+      `💳 <b>Реквизиты по заявке #${o.id}</b>\n\n${esc(o.requisites)}\n\nК оплате: <b>${fmtRub(o.payRub)}</b>\nПосле перевода нажмите «Я оплатил» в приложении.`,
+      { parse_mode: 'HTML' });
+    return true;
   } catch (e) {
-    console.error('[bot] send order:', e.message);
+    // Пользователь мог не нажать /start или заблокировать бота. API приложения уже обновлён.
+    console.error(`[bot] requisites #${o.id} → client:`, e.message);
+    return false;
   }
 }
 
 /* ---------- события заказов из веб-части ---------- */
 
 async function onOrderEvent({ order, type }) {
-  if (!bot || !config.adminId) return;
-  if (type === 'new') {
-    await sendOrUpdateOrderAdmin(order);
-  } else if (type === 'paid') {
-    await sendOrUpdateOrderAdmin(order);
-    try {
-      await bot.api.sendMessage(
-        config.adminId,
-        `🔔 <b>Клиент нажал «Я оплатил» по заявке #${order.id}!</b>\nПроверьте поступление ${fmtRub(order.payRub || order.rub)} и подтвердите завершение.`,
-        { parse_mode: 'HTML', reply_markup: orderKb(order) }
-      );
-    } catch {}
-  } else {
-    await sendOrUpdateOrderAdmin(order);
+  await sendOrUpdateOrderAdmin(order);
+  if (type === 'paid') {
+    await broadcast(
+      `🔔 <b>Клиент нажал «Я оплатил» по заявке #${order.id}!</b>\nПроверьте поступление ${fmtRub(order.payRub || order.rub)} и подтвердите завершение.`,
+      { parse_mode: 'HTML', reply_markup: orderKb(order) }
+    );
   }
 }
 
@@ -104,7 +137,8 @@ async function mainMenu(ctx, edit = false) {
     .text('📊 Статистика', 'm:stats')
     .row()
     .text('⚙️ Настройки', 'm:settings')
-    .text('🔗 Ссылки', 'm:links');
+    .text('🔗 Ссылки', 'm:links')
+    .row().text('👥 Админы', 'm:admins');
   const text =
     `🌌 <b>VEGA | Official</b> — пульт оператора\n` +
     `${s.online ? '🟢 Обменник <b>ОНЛАЙН</b>' : '🔴 Обменник <b>ОФФЛАЙН</b>'}\n` +
@@ -214,34 +248,51 @@ const SET_FIELDS = {
   chat: { label: 'ссылку на чат' },
 };
 
+async function requisitesPrompt(ctx, o, payRub = o.rub) {
+  flows.set(ctx.from.id, { type: 'req', orderId: o.id, version: o.version || 0, payRub });
+  return ctx.reply(
+    `💳 Заявка #${o.id}. Отправьте одним сообщением реквизиты (карта / СБП / счёт, банк и получатель).\n\nОни СРАЗУ появятся у клиента с суммой ${fmtRub(payRub)}. Если нужна другая сумма, сначала нажмите кнопку ниже.\n/cancel — отмена`,
+    { reply_markup: new InlineKeyboard().text('✏️ Сначала изменить сумму', `o:${o.id}:quote`) }
+  );
+}
+
 async function handleAdminText(ctx) {
   const f = flows.get(ctx.from.id);
-  if (!f) return;
-  const text = ctx.text.trim();
-  if (/^\/(cancel|stop)|^отмена$/i.test(text)) {
+  if (!f) return ctx.reply('Выберите заявку через /menu, затем нажмите «Выдать реквизиты».');
+  const text = ctx.message.text.trim();
+  if (/^\/(cancel|stop)(?:@\w+)?(?:\s|$)|^отмена$/i.test(text)) {
     flows.delete(ctx.from.id);
     return ctx.reply('❌ Ввод отменён.', { reply_markup: homeKb() });
   }
-  if (f.type === 'req') {
-    store.updateOrder(f.orderId, { requisites: text.slice(0, 900) });
+  if (f.orderId) {
     const o = store.getOrder(f.orderId);
-    flows.set(ctx.from.id, { type: 'amt', orderId: f.orderId });
-    return ctx.reply(
-      `Реквизиты сохранены.\nТеперь отправьте точную сумму к оплате в ₽ (или «так же», если ${fmtRub(o.rub)}).`,
-      { parse_mode: 'HTML' }
-    );
-  }
-  if (f.type === 'amt') {
-    const o = store.getOrder(f.orderId);
-    let pay = /^(так|таk|так же|same|=|\.)$/i.test(text) ? o.rub : parseNum(text);
-    if (!isFinite(pay) || pay <= 0) return ctx.reply('Не понял сумму. Пришлите число в рублях или «так же».');
-    flows.delete(ctx.from.id);
-    const upd = store.updateOrder(f.orderId, { payRub: pay, status: 'details' });
-    await sendOrUpdateOrderAdmin(upd);
-    return ctx.reply(`✅ Заявка #${o.id} отправлена клиенту с реквизитами и суммой ${fmtRub(pay)}.`, {
-      parse_mode: 'HTML',
-      reply_markup: homeKb(),
-    });
+    const expectedStatus = f.type === 'amt' ? 'details' : 'new';
+    if (!o || o.status !== expectedStatus || (o.version || 0) !== f.version) {
+      flows.delete(ctx.from.id);
+      return ctx.reply('Заявка уже изменена другим оператором или клиентом. Откройте её заново через /menu.', { reply_markup: homeKb() });
+    }
+    if (f.type === 'quote') {
+      const pay = parseNum(text);
+      if (!Number.isFinite(pay) || pay <= 0) return ctx.reply('Пришлите положительную сумму в рублях.');
+      return requisitesPrompt(ctx, o, pay);
+    }
+    if (f.type === 'req') {
+      if (!text || text.length > 900) return ctx.reply('Реквизиты должны содержать от 1 до 900 символов. Отправьте их целиком ещё раз.');
+      flows.delete(ctx.from.id);
+      const upd = store.updateOrder(o.id, { requisites: text, payRub: f.payRub, status: 'details' });
+      const [, delivered] = await Promise.all([sendOrUpdateOrderAdmin(upd), notifyClient(upd)]);
+      return ctx.reply(`✅ Реквизиты заявки #${o.id} опубликованы в приложении. К оплате: ${fmtRub(upd.payRub)}.\n` +
+        (delivered ? 'Уведомление в Telegram отправлено.' : 'Личное сообщение не доставлено (возможно, клиент не запускал бота). Реквизиты доступны в приложении.'),
+        { reply_markup: homeKb() });
+    }
+    if (f.type === 'amt') {
+      const pay = /^(так|так же|same|=|\.)$/i.test(text) ? o.rub : parseNum(text);
+      if (!Number.isFinite(pay) || pay <= 0) return ctx.reply('Не понял сумму. Пришлите число в рублях или «так же».');
+      flows.delete(ctx.from.id);
+      const upd = store.updateOrder(o.id, { payRub: pay });
+      await Promise.all([sendOrUpdateOrderAdmin(upd), notifyClient(upd)]);
+      return ctx.reply(`✅ Сумма заявки #${o.id} обновлена в приложении: ${fmtRub(pay)}.`, { reply_markup: homeKb() });
+    }
   }
   if (f.type && f.type.startsWith('set:')) {
     const field = SET_FIELDS[f.type.slice(4)];
@@ -271,12 +322,44 @@ function homeKb() {
     .text('⚙️ Настройки', 'm:settings')
     .row()
     .text('📊 Статистика', 'm:stats')
-    .text('🔗 Ссылки', 'm:links');
+    .text('🔗 Ссылки', 'm:links')
+    .row().text('👥 Админы', 'm:admins');
+}
+
+async function adminsMenu(ctx) {
+  const list = admins.all().map((id) => `<code>${id}</code>${admins.isOwner(id) ? ' — владелец' : ' — оператор'}`).join('\n');
+  return ctx.reply(`👥 <b>Администраторы</b>\n\n${list}\n\n` +
+    (admins.isOwner(ctx.from.id)
+      ? 'Добавить: /addadmin 123456789\nУдалить: /removeadmin 123456789\nНовый админ должен открыть бота и нажать /start.'
+      : 'Добавлять и удалять операторов может только владелец.'), { parse_mode: 'HTML' });
 }
 
 /* ---------- регистрация обработчиков ---------- */
 
 function register() {
+  bot.command('admins', (ctx) => {
+    if (!isAdmin(ctx)) return;
+    flows.delete(ctx.from.id);
+    return adminsMenu(ctx);
+  });
+  for (const command of ['addadmin', 'removeadmin']) {
+    bot.command(command, async (ctx) => {
+      if (!isAdmin(ctx)) return;
+      if (!admins.isOwner(ctx.from.id)) return ctx.reply('⛔ Только владелец может менять список админов.');
+      const id = ctx.match.trim();
+      try {
+        const changed = command === 'addadmin' ? admins.add(id) : admins.remove(id);
+        if (command === 'removeadmin') flows.delete(Number(id));
+        flows.delete(ctx.from.id);
+        await ctx.reply(changed ? '✅ Список обновлён.' : 'Список не изменился.');
+        if (changed && command === 'addadmin') {
+          await bot.api.sendMessage(id, 'Вы добавлены как оператор VEGA. /start — пульт оператора.')
+            .catch(() => ctx.reply('Попросите нового админа открыть бота и нажать /start.'));
+        }
+        return adminsMenu(ctx);
+      } catch (e) { return ctx.reply(e.message); }
+    });
+  }
   bot.command('start', async (ctx) => {
     if (!isAdmin(ctx)) {
       const url = store.get().settings.publicUrl;
@@ -292,6 +375,7 @@ function register() {
   });
   bot.command('menu', async (ctx) => {
     if (!isAdmin(ctx)) return;
+    flows.delete(ctx.from.id);
     await mainMenu(ctx, false);
   });
 
@@ -299,12 +383,15 @@ function register() {
     if (!isAdmin(ctx)) return ctx.answerCallbackQuery({ text: '⛔️' });
     const d = ctx.callbackQuery.data;
     await ctx.answerCallbackQuery().catch(() => {});
+    // За время запроса к Telegram владелец мог отозвать доступ.
+    if (!isAdmin(ctx)) return;
     flows.delete(ctx.from.id);
 
     if (d === 'm:home') return mainMenu(ctx, true);
     if (d === 'm:orders') return ordersMenu(ctx, true);
     if (d === 'm:settings') return settingsMenu(ctx, true);
     if (d === 'm:stats') return statsMenu(ctx, true);
+    if (d === 'm:admins') return adminsMenu(ctx);
     if (d === 'm:links') return linksMenu(ctx, true);
 
     if (d === 's:online') {
@@ -333,16 +420,14 @@ function register() {
       if (!act) {
         return ctx.editMessageText(orderText(o), { parse_mode: 'HTML', reply_markup: orderKb(o) }).catch(() => {});
       }
-      if (act === 'req') {
-        flows.set(ctx.from.id, { type: 'req', orderId: id });
-        return ctx.editMessageText(
-          `💳 Заявка #${id}.\nОтправьте одним сообщением реквизиты для оплаты клиентом (карта / СБП / счёт):\n\n<code>Например:\nСбер: 2202 20XX XXXX 2024\nПолучатель: VEGA\nСБП: +7 9XX XXX-XX-XX</code>\n\n( /cancel — отмена )`,
-          { parse_mode: 'HTML' }
-        ).catch(() => {});
+      const allowed = { req: ['new'], quote: ['new'], amt: ['details'], reject: ['new', 'details'], unpaid: ['paid'], confirm: ['details', 'paid'] };
+      if (!allowed[act]?.includes(o.status)) {
+        return ctx.reply('Действие недоступно: статус заявки уже изменился. Откройте заявку заново.', { reply_markup: homeKb() });
       }
-      if (act === 'amt') {
-        flows.set(ctx.from.id, { type: 'amt', orderId: id });
-        return ctx.editMessageText(`✏️ Заявка #${id}. Отправьте точную сумму к оплате в ₽ (сейчас ${fmtRub(o.payRub || o.rub)}).`, { parse_mode: 'HTML' }).catch(() => {});
+      if (act === 'req') return requisitesPrompt(ctx, o);
+      if (act === 'quote' || act === 'amt') {
+        flows.set(ctx.from.id, { type: act, orderId: id, version: o.version || 0 });
+        return ctx.reply(`✏️ Заявка #${id}. Отправьте точную сумму к оплате в ₽ (сейчас ${fmtRub(o.payRub || o.rub)}).\n/cancel — отмена`);
       }
       if (act === 'reject') {
         const upd = store.updateOrder(id, { status: 'rejected' });
@@ -371,12 +456,19 @@ function register() {
 
 /* ---------- запуск ---------- */
 
+function createBot(options = {}) {
+  bot = new Bot(config.botToken, { client: { timeoutSeconds: 15 }, ...options });
+  register();
+  bus.on('order_event', onOrderEvent);
+  return bot;
+}
+
 async function startBot() {
   if (!config.botToken) {
     console.log('[VEGA] BOT_TOKEN не задан → сайт работает в ДЕМО-режиме, бот отключён.');
     return;
   }
-  bot = new Bot(config.botToken);
+  createBot();
   await bot.init();
   store.mutate((db) => {
     db.settings.botUsername = bot.botInfo.username;
@@ -388,41 +480,29 @@ async function startBot() {
     ])
     .catch(() => {});
 
-  if (!config.adminId) {
-    console.warn('[VEGA] ВНИМАНИЕ: ADMIN_ID не задан — бот никому не будет отвечать!');
-  } else if (!store.get().flags.onboarded) {
-    store.mutate((db) => {
-      db.flags.onboarded = true;
-    });
-    await bot.api
-      .sendMessage(
-        config.adminId,
-        `🚀 <b>VEGA запущен и настроен автоматически!</b>\n\n` +
-          `🤖 Бот: @${esc(bot.botInfo.username)}\n` +
-          `🗄 База создана, дефолтные курсы установлены (меняйте в ⚙️).\n` +
-          `🌐 Сайт обменника раздаётся этим же процессом — публичный адрес определится сам при первом открытии и пропишется в кнопку меню Telegram.\n\n` +
-          `Что дальше:\n1️⃣ /start — пульт оператора\n2️⃣ ️ Настройки → поставьте свои курсы\n3️⃣ Откройте сайт и проверьте обмен end-to-end`,
-        { parse_mode: 'HTML' }
-      )
-      .catch((e) => console.error('[bot] onboarding:', e.message));
+  if (!admins.all().length) {
+    console.warn('[VEGA] ВНИМАНИЕ: ADMIN_ID / ADMIN_IDS не заданы — нет администраторов.');
   }
+  await Promise.all(admins.all().map(async (id) => {
+    if (store.get().flags.onboardedAdmins?.[id]) return;
+    try {
+      await bot.api.sendMessage(id,
+        `🚀 <b>VEGA запущен!</b>\n🤖 @${esc(bot.botInfo.username)}\n/start — пульт оператора\n/admins — список админов\nНовые заявки будут приходить всем операторам.`,
+        { parse_mode: 'HTML' });
+      store.mutate((db) => { (db.flags.onboardedAdmins ||= {})[id] = true; });
+    } catch (e) { console.error(`[bot] onboarding ${id}:`, e.message); }
+  }));
+  // Восстанавливаем карточки заявок, в том числе созданных до запуска бота.
+  for (const order of store.activeOrders()) await sendOrUpdateOrderAdmin(order);
 
-  register();
-  bus.on('order_event', onOrderEvent);
   const applyPublicUrl = async (url, notifyAdmin = true) => {
     try {
-      await bot.api.setChatMenuButton({ menu_button: { type: 'web_app', url } });
+      await bot.api.setChatMenuButton({ menu_button: { type: 'web_app', text: 'Открыть обменник', web_app: { url } } });
       console.log('[VEGA] кнопка меню Telegram настроена на', url);
     } catch (e) {
       console.error('[VEGA] setChatMenuButton:', e.message);
     }
-    if (notifyAdmin && config.adminId)
-      bot.api
-        .sendMessage(
-          config.adminId,
-          `🔗 Публичный адрес обменника:\n${url}\nОн же прописан в кнопку меню Telegram.`
-        )
-        .catch(() => {});
+    if (notifyAdmin) await broadcast(`🔗 Публичный адрес обменника:\n${url}`);
   };
   bus.on('public_url', (url) => applyPublicUrl(url, true));
   if (store.get().settings.publicUrl) {
@@ -434,4 +514,4 @@ async function startBot() {
   console.log('[VEGA] бот запущен: @' + bot.botInfo.username);
 }
 
-module.exports = { startBot };
+module.exports = { startBot, createBot };

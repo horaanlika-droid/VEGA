@@ -25,7 +25,9 @@ const plural = (n, forms) => {
 };
 
 const parseNum = (s) => {
-  const n = parseFloat(String(s).replace(/\s|₽|руб\.?/gi, '').replace(',', '.'));
+  const value = String(s).replace(/\s|₽|руб\.?/gi, '').replace(',', '.');
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value)) return NaN;
+  const n = Number(value);
   return isFinite(n) ? n : NaN;
 };
 

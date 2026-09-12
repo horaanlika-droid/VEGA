@@ -85,14 +85,22 @@
     if (initData) q.set('initData', initData);
     else if (demo) { q.set('demo[id]', demo.id); q.set('demo[name]', demo.name); }
     const sep = path.includes('?') ? '&' : '?';
-    const res = await fetch(path + sep + q.toString(), {
-      method: opts.method || 'GET',
-      headers: opts.method === 'POST' ? { 'content-type': 'application/json' } : undefined,
-      body: opts.method === 'POST' ? JSON.stringify(Object.assign({ initData, demo }, opts.body || {})) : undefined,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || 'Ошибка сервера');
-    return data;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const res = await fetch(path + sep + q.toString(), {
+        method: opts.method || 'GET',
+        cache: 'no-store',
+        signal: controller.signal,
+        headers: opts.method === 'POST' ? { 'content-type': 'application/json' } : undefined,
+        body: opts.method === 'POST' ? JSON.stringify(Object.assign({ initData, demo }, opts.body || {})) : undefined,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Ошибка сервера');
+      return data;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   const ICONS = {
@@ -262,9 +270,7 @@
         </div>`;
       $('#btnCancel').addEventListener('click', async () => {
         haptic('light');
-        const r = await api(`/api/order/${o.id}/cancel`, { method: 'POST' });
-        S.order = r.order;
-        renderOrderStage();
+        await changeOrder(o, 'cancel');
       });
     } else if (o.status === 'details') {
       box.innerHTML = `
@@ -284,15 +290,11 @@
       $('#cpReq').addEventListener('click', () => copyText(o.requisites || '', 'Реквизиты скопированы'));
       $('#btnPaid').addEventListener('click', async () => {
         haptic('medium');
-        const r = await api(`/api/order/${o.id}/paid`, { method: 'POST' });
-        S.order = r.order;
-        renderOrderStage();
+        await changeOrder(o, 'paid');
       });
       $('#btnCancel').addEventListener('click', async () => {
         haptic('light');
-        const r = await api(`/api/order/${o.id}/cancel`, { method: 'POST' });
-        S.order = r.order;
-        renderOrderStage();
+        await changeOrder(o, 'cancel');
       });
     } else if (o.status === 'paid') {
       box.innerHTML = `
@@ -320,6 +322,18 @@
           <button class="btn btn-primary" style="margin-top:18px" id="btnNew">Создать заявку</button>
         </div>`;
       $('#btnNew').addEventListener('click', resetToForm);
+    }
+  }
+
+  async function changeOrder(order, action) {
+    try {
+      const r = await api(`/api/order/${order.id}/${action}`, { method: 'POST' });
+      if (S.order?.id !== order.id) return;
+      S.order = r.order;
+      syncStatus();
+      renderOrderStage();
+    } catch (e) {
+      toast('Не удалось отправить действие. Проверьте связь и повторите.');
     }
   }
 
@@ -442,40 +456,76 @@
   }
 
   /* ---------- поллинг: всё в реальном времени ---------- */
+  function syncStatus(message = '') {
+    $('#syncStatus').textContent = message;
+    $('#syncStatus').classList.toggle('hidden', !message);
+  }
+
+  async function pollOrder() {
+    const current = S.order;
+    if (!current || TERMINAL.includes(current.status)) return syncStatus();
+    try {
+      const { order } = await api('/api/order/' + current.id);
+      // Пока шёл GET, клиент мог нажать «Я оплатил», отменить или создать другую заявку.
+      if (S.order !== current) return;
+      syncStatus();
+      if (JSON.stringify(order) !== JSON.stringify(current)) {
+        S.order = order;
+        const i = S.orders.findIndex((o) => o.id === order.id);
+        if (i >= 0) S.orders[i] = order; else S.orders.unshift(order);
+        renderOrderStage();
+        if (order.status === 'completed') haptic('heavy');
+      }
+    } catch (e) {
+      if (S.order === current) syncStatus('⚠️ Не удалось обновить заявку. Восстанавливаем связь автоматически…');
+    }
+  }
+
+  async function pollSettings() {
+    const s = await api('/api/settings');
+    if (JSON.stringify(s) !== JSON.stringify(S.settings)) {
+      S.settings = s;
+      renderHeader();
+      renderAnnounce();
+      renderFormMeta();
+      if (S.tab === 'refs') renderRefs();
+      if (S.tab === 'info') renderInfo();
+    }
+  }
+
+  async function pollProfile() {
+    if (S.tab !== 'history' && S.tab !== 'refs') return;
+    const m = await api('/api/me');
+    S.orders = m.orders;
+    S.me = m.me;
+    if (!S.order) {
+      const act = S.orders.find((o) => !TERMINAL.includes(o.status));
+      if (act) {
+        S.order = act;
+        $('#exForm').classList.add('hidden');
+        $('#exOrder').classList.remove('hidden');
+        renderOrderStage();
+      }
+    }
+    if (S.tab === 'history') renderHistory();
+    else if (S.tab === 'refs') renderRefs();
+  }
+
   function startPolling() {
-    setInterval(async () => {
-      try {
-        const s = await api('/api/settings');
-        if (JSON.stringify(s) !== JSON.stringify(S.settings)) {
-          S.settings = s;
-          renderHeader();
-          renderAnnounce();
-          renderFormMeta();
-          if (S.tab === 'refs') renderRefs();
-        }
-        if (S.order && !TERMINAL.includes(S.order.status)) {
-          const r = await api('/api/order/' + S.order.id);
-          if (JSON.stringify(r.order) !== JSON.stringify(S.order)) {
-            const was = S.order.status;
-            S.order = r.order;
-            const i = S.orders.findIndex((o) => o.id === r.order.id);
-            if (i >= 0) S.orders[i] = r.order; else S.orders.unshift(r.order);
-            renderOrderStage();
-            if (r.order.status === 'completed' && was !== 'completed') haptic('heavy');
-          }
-        }
-        if (S.tab === 'history' || S.tab === 'refs') {
-          const m = await api('/api/me');
-          S.orders = m.orders;
-          S.me = m.me;
-          if (!S.order) {
-            const act = S.orders.find((o) => !TERMINAL.includes(o.status));
-            if (act) { S.order = act; $('#exForm').classList.add('hidden'); $('#exOrder').classList.remove('hidden'); renderOrderStage(); }
-          }
-          if (S.tab === 'history') renderHistory(); else renderRefs();
-        }
-      } catch (e) {}
-    }, 3000);
+    // Независимые запросы: сбой/зависание настроек не блокирует реквизиты.
+    const running = new Set();
+    const refresh = () => Promise.all([pollOrder, pollSettings, pollProfile].map(async (poll) => {
+      if (running.has(poll)) return;
+      running.add(poll);
+      try { await poll(); }
+      catch (e) { console.warn('[VEGA] Обновление не удалось:', e.message); }
+      finally { running.delete(poll); }
+    }));
+    setInterval(refresh, 3000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+    window.addEventListener('online', refresh);
+    window.addEventListener('pageshow', refresh);
+    if (tg && tg.onEvent) tg.onEvent('activated', refresh);
   }
 
   /* ---------- старт ---------- */
