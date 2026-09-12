@@ -123,17 +123,30 @@ function startWeb() {
     const a = needAuth(req, res);
     if (!a) return;
     const s = store.get().settings;
-    const rub = Number(req.body.rub);
     const currency = req.body.currency;
     const wallet = String(req.body.wallet || '').trim();
     if (!s.online) return res.status(403).json({ error: 'Обмен временно недоступен' });
     if (!['BTC', 'LTC'].includes(currency)) return res.status(400).json({ error: 'Неизвестная валюта' });
-    if (!isFinite(rub) || rub < s.minRub) return res.status(400).json({ error: `Минимальная сумма — ${s.minRub} ₽` });
+    const rate = currency === 'BTC' ? s.rateBTC : s.rateLTC;
+    // Два способа ввода: сумма в ₽ (как раньше) либо сумма в крипте —
+    // тогда рубли к оплате считаем сразу по итоговому курсу (наценка уже внутри).
+    let rub = Number(req.body.rub);
+    let crypto = null;
+    const hasRub = req.body.rub !== undefined && req.body.rub !== null && req.body.rub !== '';
+    if (hasRub) {
+      if (!isFinite(rub) || rub <= 0) return res.status(400).json({ error: `Минимальная сумма — ${s.minRub} ₽` });
+    } else {
+      const amount = Number(req.body.cryptoAmount);
+      if (!isFinite(amount) || amount <= 0) return res.status(400).json({ error: `Минимальная сумма — ${s.minRub} ₽` });
+      rub = Math.ceil(amount * rate - 1e-6);
+      if (!isFinite(rub)) return res.status(400).json({ error: `Максимальная сумма — ${s.maxRub} ₽` });
+      crypto = amount;
+    }
+    if (rub < s.minRub) return res.status(400).json({ error: `Минимальная сумма — ${s.minRub} ₽` });
     if (rub > s.maxRub) return res.status(400).json({ error: `Максимальная сумма — ${s.maxRub} ₽` });
     if (wallet.length < 26 || wallet.length > 128 || /\s/.test(wallet))
       return res.status(400).json({ error: 'Проверьте адрес кошелька' });
     const user = store.touchUser(a.user, req.body.startParam || '');
-    const rate = currency === 'BTC' ? s.rateBTC : s.rateLTC;
     const order = store.createOrder({
       userId: String(user.id),
       userName: user.name,
@@ -142,7 +155,7 @@ function startWeb() {
       currency,
       wallet,
       rate,
-      crypto: rub / rate,
+      crypto: crypto ?? rub / rate,
       referrer: user.referrer,
     });
     bus.emit('order_event', { order, type: 'new' });
