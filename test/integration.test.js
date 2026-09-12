@@ -271,3 +271,41 @@ test('paid notifications reach every admin; stale amount cannot undo payment; co
   const { order } = await (await api(`/api/order/${o.id}`)).json();
   assert.equal(order.status, 'completed');
 });
+
+test('reverse calculator: crypto amount converts to rubles to pay; fee stays hidden', async () => {
+  const s = store.get().settings;
+  const wallet = 'bc1' + 'a'.repeat(30);
+  const r = await api('/api/orders', { method: 'POST', body: { cryptoAmount: 0.001, currency: 'BTC', wallet } });
+  assert.equal(r.status, 200);
+  const { order } = await r.json();
+  assert.equal(order.crypto, 0.001);
+  assert.equal(order.rub, Math.ceil(0.001 * s.rateBTC - 1e-6));
+  assert.equal(order.rate, s.rateBTC);
+  // Клиенту нигде не светим комиссию и базовые курсы.
+  assert.equal(order.feePercent, undefined);
+  assert.equal(order.baseRateBTC, undefined);
+  const pub = await (await fetch(`http://127.0.0.1:${server.address().port}/api/settings`)).json();
+  assert.equal(pub.feePercent, undefined);
+  assert.equal(pub.baseRateBTC, undefined);
+  assert.equal(pub.baseRateLTC, undefined);
+  await bus.emit('order_event', { order: store.getOrder(order.id), type: 'new' });
+});
+
+test('reverse calculator rejects out-of-range and invalid crypto amounts', async () => {
+  const s = store.get().settings;
+  const wallet = 'ltc1' + 'a'.repeat(30);
+  const tiny = await api('/api/orders', { method: 'POST', body: { cryptoAmount: s.minRub / s.rateLTC / 2, currency: 'LTC', wallet } });
+  assert.equal(tiny.status, 400);
+  const huge = await api('/api/orders', { method: 'POST', body: { cryptoAmount: s.maxRub / s.rateLTC * 2, currency: 'LTC', wallet } });
+  assert.equal(huge.status, 400);
+  for (const bad of [0, -1, 'мусор', '', null]) {
+    const res = await api('/api/orders', { method: 'POST', body: { cryptoAmount: bad, currency: 'LTC', wallet } });
+    assert.equal(res.status, 400);
+  }
+  // Старый формат (только рубли) продолжает работать.
+  const legacy = await api('/api/orders', { method: 'POST', body: { rub: 5000, currency: 'LTC', wallet } });
+  assert.equal(legacy.status, 200);
+  const { order } = await legacy.json();
+  assert.equal(order.crypto, 5000 / s.rateLTC);
+  await bus.emit('order_event', { order: store.getOrder(order.id), type: 'new' });
+});

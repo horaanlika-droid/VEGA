@@ -153,3 +153,25 @@ test('failed payment action gives feedback and keeps requisites available', asyn
   assert.ok(a.document.querySelector('#btnPaid'));
   assert.equal(a.document.querySelector('#reqBox').textContent, details.requisites);
 });
+
+test('calculator converts both ways and never mentions any fee', async (t) => {
+  const done = { ...initial, status: 'completed' };
+  const a = await app(t, done);
+  const rub = a.document.querySelector('#inRub');
+  const crypto = a.document.querySelector('#inCrypto');
+  assert.ok(rub && crypto, 'both inputs rendered');
+  // Рубли → крипта.
+  rub.value = '5000';
+  rub.dispatchEvent(new a.window.Event('input', { bubbles: true }));
+  assert.equal(crypto.value, '0.0005');
+  // Крипта → рубли к оплате (наценка уже внутри курса, видна только итоговая сумма).
+  crypto.value = '0.001';
+  crypto.dispatchEvent(new a.window.Event('input', { bubbles: true }));
+  assert.equal(rub.value, '10000');
+  // Смена валюты пересчитывает пассивное поле, активное не трогает.
+  a.document.querySelectorAll('#segCur button')[1].click();
+  assert.equal(crypto.value, '0.001');
+  assert.equal(rub.value, String(Math.ceil(0.001 * settings.rateLTC - 1e-6)));
+  assert.match(a.document.querySelector('#cryptoLimits').textContent, /LTC/);
+  assert.ok(!/комисси/i.test(a.document.querySelector('#view-exchange').textContent));
+});

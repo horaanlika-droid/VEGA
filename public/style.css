@@ -140,6 +140,12 @@ body {
 .f-get { display: flex; align-items: center; gap: 10px; padding: 13px 14px; background: rgba(2, 10, 20, 0.55); border: 1px dashed rgba(84, 220, 255, 0.25); border-radius: 15px; }
 .f-get .val { flex: 1; font: 800 17px 'Manrope'; color: var(--teal); text-shadow: 0 0 16px rgba(23, 233, 192, 0.4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+.f-hint { margin-top: 10px; font-size: 11.5px; color: var(--mut); text-align: center; }
+
+/* Убираем стрелки у числовых полей — на мобильных они только мешают. */
+.f-box input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
+.f-box input::-webkit-outer-spin-button, .f-box input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
 .f-meta { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
 .f-meta .row { display: flex; justify-content: space-between; font-size: 12px; color: var(--mut); }
 .f-meta .row b { color: #cfe9ff; font-weight: 700; }

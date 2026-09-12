@@ -30,7 +30,7 @@
 
   const $ = (s) => document.querySelector(s);
   const TERMINAL = ['completed', 'rejected', 'cancelled'];
-  const S = { settings: null, me: null, orders: [], order: null, tab: 'exchange', currency: 'BTC', isDemo: false };
+  const S = { settings: null, me: null, orders: [], order: null, tab: 'exchange', currency: 'BTC', isDemo: false, calcFrom: 'rub' };
 
   const STATUS = {
     new: { label: 'Подбор реквизитов', color: '#ffb648' },
@@ -48,6 +48,15 @@
     const n = Number(v) || 0;
     const dec = n >= 1000 ? 2 : n >= 1 ? 4 : 6;
     return n.toFixed(dec) + ' ' + cur;
+  };
+  // Пересчёт «рубли ↔ крипта» по итоговому курсу (наценка уже внутри курса,
+  // отдельной строкой клиенту ничего не показываем).
+  const cryptoFromRub = (rub, rate) => Math.floor(((Number(rub) || 0) / rate) * 1e8 + 1e-6) / 1e8;
+  const rubFromCrypto = (crypto, rate) => Math.ceil(Number(crypto) * rate - 1e-6);
+  const fmtTrim = (v) => {
+    const n = Number(v) || 0;
+    if (!(n > 0)) return '';
+    return n.toFixed(8).replace(/\.?0+$/, '');
   };
   const fmtDate = (ts) => {
     const d = new Date(ts);
@@ -171,14 +180,15 @@
         <div class="card">
           <div class="card-title">Направление обмена</div>
           <div class="f-label"><span>Вы отдаёте</span><span id="mmLabel"></span></div>
-          <div class="f-box"><div class="coin-ic rub">₽</div><input id="inRub" type="number" inputmode="decimal" placeholder="5 000" min="0"></div>
+          <div class="f-box"><div class="coin-ic rub">₽</div><input id="inRub" type="number" inputmode="decimal" placeholder="5 000" min="0" step="any"></div>
           <div class="f-sep"><div class="arr">${ICONS.down}</div></div>
-          <div class="f-label"><span>Вы получаете</span></div>
+          <div class="f-label"><span>Вы получаете</span><span id="cryptoLimits"></span></div>
           <div class="seg" id="segCur">
             <button data-c="BTC" class="${S.currency === 'BTC' ? 'on' : ''}">₿&nbsp;BTC</button>
             <button data-c="LTC" class="${S.currency === 'LTC' ? 'on' : ''}">Ł&nbsp;LTC</button>
           </div>
-          <div class="f-get" style="margin-top:10px"><div class="coin-ic" id="getIc">₿</div><div class="val" id="getVal">0 BTC</div></div>
+          <div class="f-box" style="margin-top:10px"><div class="coin-ic" id="getIc">₿</div><input id="inCrypto" type="number" inputmode="decimal" placeholder="0.0005" min="0" step="any"></div>
+          <div class="f-hint">Введите сумму в любом поле — второе посчитается автоматически</div>
           <div class="f-meta" id="fMeta"></div>
         </div>
         <div class="card">
@@ -198,7 +208,8 @@
         renderFormMeta();
       })
     );
-    $('#inRub').addEventListener('input', renderFormMeta);
+    $('#inRub').addEventListener('input', () => { S.calcFrom = 'rub'; renderFormMeta(); });
+    $('#inCrypto').addEventListener('input', () => { S.calcFrom = 'crypto'; renderFormMeta(); });
     $('#btnGo').addEventListener('click', submitOrder);
     renderFormMeta();
     renderOrderStage();
@@ -209,9 +220,21 @@
     if (!s) return;
     const cur = S.currency;
     const rate = cur === 'BTC' ? s.rateBTC : s.rateLTC;
-    const rub = parseFloat($('#inRub') && $('#inRub').value) || 0;
+    const inRub = $('#inRub');
+    const inCrypto = $('#inCrypto');
+    // Пересчитываем только пассивное поле — активное не трогаем, чтобы не сбивать ввод.
+    if (inRub && inCrypto) {
+      if (S.calcFrom === 'crypto') {
+        const c = parseFloat(inCrypto.value);
+        inRub.value = c > 0 ? String(rubFromCrypto(c, rate)) : '';
+      } else {
+        const rub = parseFloat(inRub.value);
+        inCrypto.value = rub > 0 ? fmtTrim(cryptoFromRub(rub, rate)) : '';
+      }
+    }
     $('#mmLabel').textContent = `от ${fmtRub(s.minRub)} до ${fmtRub(s.maxRub)}`;
-    $('#getVal').textContent = rub > 0 ? '≈ ' + fmtCrypto(rub / rate, cur) : '0 ' + cur;
+    const cl = $('#cryptoLimits');
+    if (cl) cl.textContent = `≈ ${fmtTrim(s.minRub / rate)}–${fmtTrim(s.maxRub / rate)} ${cur}`;
     const ic = $('#getIc');
     ic.className = 'coin-ic ' + cur.toLowerCase();
     ic.textContent = cur === 'BTC' ? '₿' : 'Ł';
@@ -232,17 +255,26 @@
     const s = S.settings;
     const err = $('#fErr');
     err.textContent = '';
-    const rub = parseFloat($('#inRub').value);
+    const rate = S.currency === 'BTC' ? s.rateBTC : s.rateLTC;
+    const rawRub = parseFloat($('#inRub').value);
+    const rawCrypto = parseFloat($('#inCrypto').value);
+    // Клиент мог ввести сумму в любом поле: в крипте — сразу считаем рубли к оплате.
+    const useCrypto = S.calcFrom === 'crypto' && isFinite(rawCrypto) && rawCrypto > 0;
+    const cryptoAmount = useCrypto ? rawCrypto : null;
+    const rub = useCrypto ? rubFromCrypto(rawCrypto, rate) : rawRub;
     const wallet = ($('#inWallet').value || '').trim();
     if (!s.online) return (err.textContent = '⛔ Обмен временно недоступен — загляните позже.');
-    if (!isFinite(rub) || rub < s.minRub) return (err.textContent = `Минимальная сумма обмена — ${fmtRub(s.minRub)}.`);
-    if (rub > s.maxRub) return (err.textContent = `Максимальная сумма обмена — ${fmtRub(s.maxRub)}.`);
+    if (!isFinite(rub) || rub < s.minRub) return (err.textContent = `Минимальная сумма обмена — ${fmtRub(s.minRub)} (≈ ${fmtTrim(cryptoFromRub(s.minRub, rate))} ${S.currency}).`);
+    if (rub > s.maxRub) return (err.textContent = `Максимальная сумма обмена — ${fmtRub(s.maxRub)} (≈ ${fmtTrim(cryptoFromRub(s.maxRub, rate))} ${S.currency}).`);
     if (!/^[a-zA-Z0-9]{26,90}$/.test(wallet)) return (err.textContent = 'Проверьте адрес кошелька — он выглядит некорректно.');
     const btn = $('#btnGo');
     btn.disabled = true;
     haptic('medium');
     try {
-      const r = await api('/api/orders', { method: 'POST', body: { rub, currency: S.currency, wallet, startParam } });
+      const body = useCrypto
+        ? { cryptoAmount, currency: S.currency, wallet, startParam }
+        : { rub, currency: S.currency, wallet, startParam };
+      const r = await api('/api/orders', { method: 'POST', body });
       S.order = r.order;
       S.orders.unshift(r.order);
       haptic('heavy');
@@ -519,7 +551,7 @@
         <div class="about"><b>VEGA</b> — современный сервис обмена Bitcoin и Litecoin. Честность, скорость и выгодные условия: мы создали сервис, которым удобно пользоваться каждый день.</div>
         <div class="feat">
           <div class="f"><span class="i">✅</span>Выгодный курс — максимум за каждый обмен</div>
-          <div class="f"><span class="i">✅</span>Минимальные комиссии, без скрытых платежей</div>
+          <div class="f"><span class="i">✅</span>Фиксированная сумма к оплате — известна заранее, без доплат</div>
           <div class="f"><span class="i">✅</span>Быстрые сделки и живая поддержка оператора</div>
           <div class="f"><span class="i">✅</span>Безопасность каждой операции</div>
         </div>
