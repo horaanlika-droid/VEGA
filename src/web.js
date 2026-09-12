@@ -3,6 +3,7 @@ const path = require('path');
 const config = require('./config');
 const store = require('./store');
 const bus = require('./bus');
+const receipts = require('./receipts');
 const { validateInitData, parseUser } = require('./validate');
 
 const clientOrder = (o) => ({
@@ -15,6 +16,7 @@ const clientOrder = (o) => ({
   status: o.status,
   requisites: o.requisites,
   payRub: o.payRub,
+  receipt: o.receipt || null,
   createdAt: o.createdAt,
   updatedAt: o.updatedAt,
 });
@@ -32,7 +34,8 @@ function startWeb() {
   app.disable('x-powered-by');
   app.set('trust proxy', true);
   app.set('query parser', 'extended');
-  app.use(express.json({ limit: '1mb' }));
+  // Повышенный лимит — клиенты загружают чеки PDF в base64 (до 8 МБ файлом).
+  app.use(express.json({ limit: '12mb' }));
 
   // Персональные статусы и реквизиты нельзя отдавать из кэша браузера/CDN.
   app.use('/api', (_req, res, next) => {
@@ -154,12 +157,67 @@ function startWeb() {
     res.json({ order: clientOrder(o) });
   });
 
+  // Чек об оплате (PDF) от клиента. Обязателен перед кнопкой «Я оплатил».
+  app.post('/api/order/:id/receipt', (req, res) => {
+    const a = needAuth(req, res);
+    if (!a) return;
+    const o = store.getOrder(req.params.id);
+    if (!o || o.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
+    if (!['details', 'paid'].includes(o.status)) {
+      return res.status(400).json({ error: 'Чек можно прикрепить только после выдачи реквизитов' });
+    }
+    const filename = String(req.body?.filename || '').slice(0, 120);
+    let data = String(req.body?.data || '');
+    if (!/\.pdf$/i.test(filename)) return res.status(400).json({ error: 'Нужен файл в формате PDF' });
+    const m = data.match(/^data:application\/pdf;base64,/i);
+    if (m) data = data.slice(m[0].length);
+    if (!data || data.length > Math.ceil(receipts.MAX_BYTES * 4 / 3) + 1024) {
+      return res.status(400).json({ error: 'PDF должен весить до 8 МБ' });
+    }
+    let buf;
+    try {
+      buf = Buffer.from(data, 'base64');
+    } catch {
+      return res.status(400).json({ error: 'Не удалось прочитать файл' });
+    }
+    if (buf.length === 0 || buf.length > receipts.MAX_BYTES) {
+      return res.status(400).json({ error: 'PDF должен весить до 8 МБ' });
+    }
+    if (buf.subarray(0, 5).toString('latin1') !== '%PDF-') {
+      return res.status(400).json({ error: 'Файл не похож на PDF' });
+    }
+    try {
+      receipts.save(o.id, buf);
+    } catch (e) {
+      console.error('[web] receipt save:', e.message);
+      return res.status(500).json({ error: 'Не удалось сохранить чек, попробуйте позже' });
+    }
+    const upd = store.setReceipt(o.id, { name: filename, size: buf.length, at: Date.now() });
+    bus.emit('order_event', { order: upd, type: 'receipt' });
+    res.json({ order: clientOrder(upd) });
+  });
+
+  // Скачивание своего чека клиентом.
+  app.get('/api/order/:id/receipt', (req, res) => {
+    const a = needAuth(req, res);
+    if (!a) return;
+    const o = store.getOrder(req.params.id);
+    if (!o || o.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
+    if (!o.receipt || !receipts.exists(o.id)) return res.status(404).json({ error: 'Чек не найден' });
+    res.set('Content-Type', 'application/pdf');
+    res.set('Content-Disposition', `attachment; filename="check-${o.id}.pdf"`);
+    res.sendFile(receipts.filePath(o.id));
+  });
+
   app.post('/api/order/:id/paid', (req, res) => {
     const a = needAuth(req, res);
     if (!a) return;
     const o = store.getOrder(req.params.id);
     if (!o || o.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
     if (o.status === 'details') {
+      if (!o.receipt) {
+        return res.status(400).json({ error: 'Сначала прикрепите чек в формате PDF' });
+      }
       const upd = store.updateOrder(o.id, { status: 'paid' });
       bus.emit('order_event', { order: upd, type: 'paid' });
       return res.json({ order: clientOrder(upd) });

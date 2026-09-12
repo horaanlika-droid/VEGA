@@ -7,14 +7,15 @@ const { JSDOM } = require('jsdom');
 const html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
 const script = fs.readFileSync(path.join(__dirname, '../public/app.js'), 'utf8');
 const settings = {
-  online: true, rateBTC: 10000000, rateLTC: 9000, minRub: 3000, maxRub: 300000,
+  online: true, rateBTC: 10000000, rateLTC: 9000, rateUpdatedAt: 1,
+  minRub: 3000, maxRub: 300000,
   announcement: 'VEGA', refPercent: 1, operator: '@test', channel: 'https://t.me/test', chat: 'https://t.me/test',
 };
 const initial = {
   id: 1, status: 'new', currency: 'BTC', rub: 5000, crypto: 0.0005,
-  wallet: 'bc1' + 'a'.repeat(30), createdAt: 1, updatedAt: 1, requisites: null, payRub: null,
+  wallet: 'bc1' + 'a'.repeat(30), createdAt: 1, updatedAt: 1, requisites: null, payRub: null, receipt: null,
 };
-const details = { ...initial, status: 'details', requisites: 'СБП: +7 900 000-00-00\nТестовый банк', payRub: 5000, updatedAt: 2 };
+const details = { ...initial, status: 'details', requisites: 'СБП: +7 900 000-00-00\nТестовый банк', payRub: 5000, updatedAt: 2, receipt: { name: 'check.pdf', size: 2048, at: 2 } };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 function deferred() {
   let resolve;
@@ -122,6 +123,25 @@ test('late GET cannot overwrite a successful payment action', async (t) => {
   await polling;
   assert.match(a.document.querySelector('#exOrder').textContent, /Подтверждаем оплату/);
   assert.equal(a.document.querySelector('#btnPaid'), null);
+});
+
+test('payment without a receipt is blocked until a PDF is attached', async (t) => {
+  const noReceipt = { ...details, receipt: null, updatedAt: 3 };
+  const a = await app(t, noReceipt);
+  assert.ok(a.document.querySelector('#btnPick'));
+  assert.ok(a.document.querySelector('#inReceipt'));
+  a.document.querySelector('#btnPaid').click();
+  await tick();
+  assert.match(a.document.querySelector('#toast').textContent, /PDF/);
+  assert.ok(!a.calls.some((c) => c.pathname.endsWith('/paid')));
+  assert.ok(a.document.querySelector('#btnPaid'));
+});
+
+test('paid stage without a receipt offers late upload', async (t) => {
+  const paidNoReceipt = { ...details, status: 'paid', receipt: null, updatedAt: 4 };
+  const a = await app(t, paidNoReceipt);
+  assert.ok(a.document.querySelector('#btnSendReceipt'));
+  assert.match(a.document.querySelector('#fileName').textContent, /не прикреплён/);
 });
 
 test('failed payment action gives feedback and keeps requisites available', async (t) => {

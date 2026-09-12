@@ -7,8 +7,13 @@ const DB_FILE = path.join(DATA_DIR, 'db.json');
 const defaults = () => ({
   seq: 1,
   settings: {
-    rateBTC: 10250000, // ₽ за 1 BTC
-    rateLTC: 9400, // ₽ за 1 LTC
+    rateBTC: 10250000, // ₽ за 1 BTC (итоговый, с комиссией)
+    rateLTC: 9400, // ₽ за 1 LTC (итоговый, с комиссией)
+    baseRateBTC: null, // официальный курс BTC без комиссии (авто)
+    baseRateLTC: null, // официальный курс LTC без комиссии (авто)
+    feePercent: 2, // комиссия обменника, % поверх официального курса
+    rateUpdatedAt: null,
+    rateSource: 'manual',
     minRub: 3000,
     maxRub: 300000,
     online: true,
@@ -70,9 +75,12 @@ const mutate = (fn) => {
 
 function publicSettings() {
   const s = db.settings;
+  // Клиенту отдаём только итоговые курсы (комиссия уже зашита внутрь).
+  // feePercent и базовые курсы не светим — это видит только оператор в боте.
   return {
     rateBTC: s.rateBTC,
     rateLTC: s.rateLTC,
+    rateUpdatedAt: s.rateUpdatedAt,
     minRub: s.minRub,
     maxRub: s.maxRub,
     online: !!s.online,
@@ -146,6 +154,7 @@ function createOrder(o) {
       status: 'new',
       requisites: null,
       payRub: null,
+      receipt: null, // { name, size, at } — чек PDF от клиента
       referrer: o.referrer || null,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -158,6 +167,17 @@ function createOrder(o) {
 }
 
 const getOrder = (id) => db.orders.find((o) => o.id === Number(id)) || null;
+
+// Чек не конфликтует с вводом оператора, поэтому версию заявки не трогаем.
+function setReceipt(id, receipt) {
+  return mutate((d) => {
+    const o = d.orders.find((x) => x.id === Number(id));
+    if (!o) return null;
+    o.receipt = receipt;
+    o.updatedAt = Date.now();
+    return o;
+  });
+}
 
 function updateOrder(id, patch) {
   return mutate((d) => {
@@ -200,6 +220,7 @@ module.exports = {
   createOrder,
   getOrder,
   updateOrder,
+  setReceipt,
   userOrders,
   activeOrders,
   stats,
