@@ -208,10 +208,54 @@ test('removed admin cannot finish an existing flow; unauthorized callbacks do no
   assert.equal(store.getOrder(o.id).status, 'new');
 });
 
+test('payment requires a PDF receipt; invalid files rejected, receipt reaches admins and owner', async () => {
+  const pdf = Buffer.from('%PDF-1.4\n% fake receipt\n').toString('base64');
+  const o = await newOrder();
+  await click(111, `o:${o.id}:req`);
+  await text(111, 'Реквизиты');
+  // Без чека оплатить нельзя.
+  const nopdf = await api(`/api/order/${o.id}/paid`, { method: 'POST' });
+  assert.equal(nopdf.status, 400);
+  assert.equal(store.getOrder(o.id).status, 'details');
+  // Не-PDF отклоняется.
+  const badExt = await api(`/api/order/${o.id}/receipt`, { method: 'POST', body: { filename: 'check.txt', data: Buffer.from('hello').toString('base64') } });
+  assert.equal(badExt.status, 400);
+  const badMagic = await api(`/api/order/${o.id}/receipt`, { method: 'POST', body: { filename: 'check.pdf', data: Buffer.from('not a pdf').toString('base64') } });
+  assert.equal(badMagic.status, 400);
+  assert.equal(store.getOrder(o.id).receipt, null);
+  // Валидный чек принимается и рассылается всем админам файлом.
+  calls = [];
+  const ok = await api(`/api/order/${o.id}/receipt`, { method: 'POST', body: { filename: 'check.pdf', data: pdf } });
+  assert.equal(ok.status, 200);
+  const { order } = await ok.json();
+  assert.equal(order.receipt.name, 'check.pdf');
+  assert.ok(order.receipt.size > 0);
+  await bus.emit('order_event', { order: store.getOrder(o.id), type: 'receipt' });
+  for (const id of admins.all()) {
+    assert.ok(calls.some((c) => c.method === 'sendDocument' && String(c.chat_id) === String(id)));
+  }
+  // Скачивание чека владельцем.
+  const dl = await api(`/api/order/${o.id}/receipt`);
+  assert.equal(dl.status, 200);
+  assert.match(dl.headers.get('content-type'), /pdf/);
+  assert.equal(Buffer.from(await dl.arrayBuffer()).subarray(0, 5).toString(), '%PDF-');
+  assert.equal((await api(`/api/order/${o.id}/receipt`, { id: 888 })).status, 404);
+  // Теперь оплата проходит.
+  const paid = await api(`/api/order/${o.id}/paid`, { method: 'POST' });
+  assert.equal(paid.status, 200);
+  assert.equal(store.getOrder(o.id).status, 'paid');
+  // Кнопка «Получить чек» отправляет файл запросившему админу.
+  calls = [];
+  await click(222, `o:${o.id}:receipt`);
+  assert.ok(calls.some((c) => c.method === 'sendDocument' && String(c.chat_id) === '222'));
+});
+
 test('paid notifications reach every admin; stale amount cannot undo payment; confirmation is idempotent', async () => {
   const o = await newOrder();
   await click(111, `o:${o.id}:req`);
   await text(111, 'Реквизиты');
+  const pdf = Buffer.from('%PDF-1.4 test').toString('base64');
+  await api(`/api/order/${o.id}/receipt`, { method: 'POST', body: { filename: 'check.pdf', data: pdf } });
   await click(111, `o:${o.id}:amt`);
   calls = [];
   await api(`/api/order/${o.id}/paid`, { method: 'POST' });

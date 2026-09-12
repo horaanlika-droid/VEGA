@@ -54,6 +54,14 @@
     const p = (x) => String(x).padStart(2, '0');
     return `${p(d.getDate())}.${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
   };
+  const fmtSize = (n) => {
+    n = Number(n) || 0;
+    if (n < 1024) return n + ' Б';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(n < 10240 ? 1 : 0) + ' КБ';
+    return (n / 1024 / 1024).toFixed(1) + ' МБ';
+  };
+  // Выбранный, но ещё не отправленный чек: { orderId, file }
+  let pendingReceipt = null;
   const haptic = (t) => { try { tg && tg.HapticFeedback && tg.HapticFeedback.impactOccurred(t || 'light'); } catch (e) {} };
 
   let toastTimer = null;
@@ -213,7 +221,7 @@
     $('#inWallet').placeholder = cur === 'BTC' ? 'Адрес BTC-кошелька (bc1… / 1… / 3…)' : 'Адрес LTC-кошелька (ltc1… / L… / M…)';
     $('#fMeta').innerHTML = `
       <div class="row"><span>Курс</span><b>1 ${cur} = ${fmtRub(rate)}</b></div>
-      <div class="row"><span>Комиссия сервиса</span><b>0 ₽</b></div>
+      ${s.rateUpdatedAt ? `<div class="row"><span>Курс обновлён</span><b>${fmtDate(s.rateUpdatedAt)}</b></div>` : ''}
       <div class="row"><span>Обработкой занимается</span><b>оператор VEGA</b></div>`;
     const btn = $('#btnGo');
     btn.disabled = !s.online;
@@ -282,15 +290,21 @@
             <button class="btn btn-ghost btn-sm" id="cpSum">${ICONS.copy}<span>Сумма</span></button>
             <button class="btn btn-ghost btn-sm" id="cpReq">${ICONS.copy}<span>Реквизиты</span></button>
           </div>
-          <div class="note">Переведите <b>точную сумму</b> по реквизитам выше, затем нажмите кнопку ниже. После подтверждения оператор отправит ${fmtCrypto(o.crypto, o.currency)} на ваш кошелёк.</div>
+          <div class="file-box">
+            <input type="file" id="inReceipt" accept=".pdf,application/pdf" hidden>
+            <button class="btn btn-ghost btn-sm" id="btnPick">📎 <span>${o.receipt ? 'Заменить чек (PDF)' : 'Прикрепить чек (PDF)'}</span></button>
+            <div class="file-name ${o.receipt ? 'ok' : ''}" id="fileName">${o.receipt ? `✅ ${esc(o.receipt.name)} (${fmtSize(o.receipt.size)})` : 'Без чека оплата не подтвердится'}</div>
+          </div>
+          <div class="note">Переведите <b>точную сумму</b> по реквизитам выше, прикрепите <b>чек в PDF</b>, затем нажмите кнопку ниже. После подтверждения оператор отправит ${fmtCrypto(o.crypto, o.currency)} на ваш кошелёк.</div>
           <button class="btn btn-primary" style="margin-top:14px" id="btnPaid">${ICONS.check}<span>Я оплатил</span></button>
           <button class="btn btn-ghost" style="margin-top:8px" id="btnCancel">Отменить заявку</button>
         </div>`;
       $('#cpSum').addEventListener('click', () => copyText(String(Math.round(o.payRub || o.rub)), 'Сумма скопирована'));
       $('#cpReq').addEventListener('click', () => copyText(o.requisites || '', 'Реквизиты скопированы'));
+      wireReceiptPicker(o);
       $('#btnPaid').addEventListener('click', async () => {
         haptic('medium');
-        await changeOrder(o, 'paid');
+        await confirmPaidWithReceipt(o);
       });
       $('#btnCancel').addEventListener('click', async () => {
         haptic('light');
@@ -302,7 +316,37 @@
           <div class="spinner-wrap"><div class="spinner"></div><div class="spinner-ic">⏳</div></div>
           <div class="stage-title">Подтверждаем оплату</div>
           <div class="stage-sub">Оператор проверяет поступление ${fmtRub(o.payRub || o.rub)} по заявке <b>#${o.id}</b>.<br>Как только платёж подтвердится — мы отправим ${fmtCrypto(o.crypto, o.currency)}.</div>
+          ${o.receipt
+            ? `<div class="note">🧾 Чек <b>${esc(o.receipt.name)}</b> отправлен оператору ✅</div>`
+            : `<div class="file-box">
+                 <input type="file" id="inReceipt" accept=".pdf,application/pdf" hidden>
+                 <button class="btn btn-ghost btn-sm" id="btnPick">📎 <span>Выбрать чек (PDF)</span></button>
+                 <div class="file-name" id="fileName">⚠️ Чек не прикреплён — без него оператор не подтвердит оплату</div>
+                 <button class="btn btn-primary btn-sm" style="width:100%" id="btnSendReceipt">Отправить чек</button>
+               </div>`}
         </div>`;
+      if (!o.receipt) {
+        wireReceiptPicker(o);
+        $('#btnSendReceipt').addEventListener('click', async () => {
+          const picked = pendingReceipt && pendingReceipt.orderId === o.id ? pendingReceipt.file : null;
+          if (!picked) return toast('📎 Сначала выберите чек в формате PDF');
+          const btn = $('#btnSendReceipt');
+          btn.disabled = true;
+          haptic('medium');
+          try {
+            const updated = await uploadReceipt(o, picked);
+            pendingReceipt = null;
+            S.order = updated;
+            const i = S.orders.findIndex((x) => x.id === updated.id);
+            if (i >= 0) S.orders[i] = updated;
+            toast('Чек отправлен оператору ✅');
+            renderOrderStage();
+          } catch (e) {
+            toast(e.message || 'Не удалось отправить чек');
+            btn.disabled = false;
+          }
+        });
+      }
     } else if (o.status === 'completed') {
       box.innerHTML = `
         <div class="card stage">
@@ -322,6 +366,75 @@
           <button class="btn btn-primary" style="margin-top:18px" id="btnNew">Создать заявку</button>
         </div>`;
       $('#btnNew').addEventListener('click', resetToForm);
+    }
+  }
+
+  /* ---------- чек PDF ---------- */
+  function wireReceiptPicker(o) {
+    $('#btnPick').addEventListener('click', () => { haptic('light'); $('#inReceipt').click(); });
+    $('#inReceipt').addEventListener('change', (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') { toast('Нужен файл в формате PDF'); e.target.value = ''; return; }
+      if (f.size > 8 * 1024 * 1024) { toast('PDF должен весить до 8 МБ'); e.target.value = ''; return; }
+      pendingReceipt = { orderId: o.id, file: f };
+      haptic('light');
+      const fn = $('#fileName');
+      if (fn) { fn.textContent = `📎 ${f.name} (${fmtSize(f.size)})`; fn.classList.remove('ok'); }
+    });
+    // Перерисовка (поллинг) не должна терять уже выбранный файл.
+    const picked = pendingReceipt && pendingReceipt.orderId === o.id ? pendingReceipt.file : null;
+    if (picked && !o.receipt) {
+      const fn = $('#fileName');
+      if (fn) fn.textContent = `📎 ${picked.name} (${fmtSize(picked.size)})`;
+    }
+  }
+
+  function readAsBase64(file) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => {
+        const s = String(r.result || '');
+        const idx = s.indexOf(',');
+        resolve(idx >= 0 ? s.slice(idx + 1) : s);
+      };
+      r.onerror = () => reject(new Error('Не удалось прочитать файл'));
+      r.readAsDataURL(file);
+    });
+  }
+
+  async function uploadReceipt(order, file) {
+    const base64 = await readAsBase64(file);
+    const r = await api(`/api/order/${order.id}/receipt`, {
+      method: 'POST',
+      body: { filename: file.name, data: base64 },
+    });
+    return r.order;
+  }
+
+  async function confirmPaidWithReceipt(order) {
+    const btn = $('#btnPaid');
+    const label = btn && btn.querySelector('span');
+    try {
+      let current = S.order && S.order.id === order.id ? S.order : order;
+      if (!current.receipt) {
+        const picked = pendingReceipt && pendingReceipt.orderId === order.id ? pendingReceipt.file : null;
+        if (!picked) {
+          toast('📎 Сначала прикрепите чек в формате PDF');
+          return;
+        }
+        if (btn) { btn.disabled = true; if (label) label.textContent = 'Отправляем чек…'; }
+        current = await uploadReceipt(order, picked);
+        pendingReceipt = null;
+        S.order = current;
+        const i = S.orders.findIndex((x) => x.id === current.id);
+        if (i >= 0) S.orders[i] = current; else S.orders.unshift(current);
+        if (label) label.textContent = 'Подтверждаем…';
+      }
+      await changeOrder(current, 'paid');
+    } catch (e) {
+      toast(e.message || 'Не удалось отправить. Проверьте связь и повторите.');
+      renderOrderStage();
     }
   }
 
@@ -361,7 +474,7 @@
           <div class="h-ic ${o.currency.toLowerCase()}">${o.currency === 'BTC' ? '₿' : 'Ł'}</div>
           <div class="h-main">
             <div class="h-top"><span>₽ → ${o.currency}</span><span>${fmtRub(o.payRub || o.rub)}</span></div>
-            <div class="h-sub"><span>#${o.id} · ${fmtDate(o.createdAt)}</span>${chip(o.status)}</div>
+            <div class="h-sub"><span>#${o.id}${o.receipt ? ' 🧾' : ''} · ${fmtDate(o.createdAt)}</span>${chip(o.status)}</div>
             <div class="h-sub" style="margin-top:2px"><span>${esc(o.wallet.slice(0, 10) + '…' + o.wallet.slice(-6))}</span><b style="color:#9fd8ff">${fmtCrypto(o.crypto, o.currency)}</b></div>
           </div>
         </div>`

@@ -1,9 +1,11 @@
-const { Bot, InlineKeyboard } = require('grammy');
+const { Bot, InlineKeyboard, InputFile } = require('grammy');
 const config = require('./config');
 const store = require('./store');
 const bus = require('./bus');
 const admins = require('./admins');
-const { esc, fmtRub, fmtCrypto, fmtDate, parseNum } = require('./util');
+const rates = require('./rates');
+const receipts = require('./receipts');
+const { esc, fmtRub, fmtCrypto, fmtDate, fmtSize, parseNum } = require('./util');
 
 let bot = null;
 const flows = new Map(); // adminId -> { type, orderId? }
@@ -32,6 +34,9 @@ function orderText(o) {
     `🧬 Реферер: ${ref ? esc(ref.name) + ' (#' + esc(ref.id) + ')' : '—'}\n` +
     (o.requisites ? `🏦 Реквизиты: ${esc(o.requisites)}\n` : '') +
     (o.payRub ? `💰 К оплате: <b>${fmtRub(o.payRub)}</b>\n` : '') +
+    (o.receipt
+      ? `🧾 Чек: ✅ ${esc(o.receipt.name)} (${fmtSize(o.receipt.size)})\n`
+      : ['details', 'paid'].includes(o.status) ? `🧾 Чек: ⏳ не прикреплён\n` : '') +
     `🕒 ${fmtDate(o.createdAt)}\n` +
     `Статус: ${STATUS_LABEL[o.status] || o.status}`
   );
@@ -46,11 +51,14 @@ function orderKb(o) {
       .row()
       .text('✏️ Изменить сумму', `o:${o.id}:amt`)
       .text('❌ Отклонить', `o:${o.id}:reject`);
+    if (o.receipt) kb.row().text('🧾 Получить чек', `o:${o.id}:receipt`);
   } else if (o.status === 'paid') {
     kb.text('✅ Подтвердить и завершить', `o:${o.id}:confirm`)
       .row()
       .text('❌ Оплата не поступила', `o:${o.id}:unpaid`);
+    if (o.receipt) kb.row().text('🧾 Получить чек', `o:${o.id}:receipt`);
   } else {
+    if (o.receipt) kb.text('🧾 Получить чек', `o:${o.id}:receipt`).row();
     kb.text(' К списку заявок', 'm:orders');
   }
   return kb;
@@ -102,6 +110,30 @@ async function broadcast(text, options = {}) {
   }));
 }
 
+async function sendReceiptTo(adminId, o) {
+  const file = receipts.filePath(o.id);
+  if (!o.receipt || !receipts.exists(o.id)) {
+    await bot.api.sendMessage(adminId,
+      `⚠️ <b>Заявка #${o.id}</b>: файл чека не найден на сервере.`,
+      { parse_mode: 'HTML' }).catch((e) => console.error(`[bot] receipt miss ${adminId}:`, e.message));
+    return false;
+  }
+  try {
+    await bot.api.sendDocument(adminId, new InputFile(file, `check-${o.id}.pdf`), {
+      caption: `🧾 Чек по заявке #${o.id} · ${fmtRub(o.payRub || o.rub)} · ${o.receipt.name} (${fmtSize(o.receipt.size)})`,
+    });
+    return true;
+  } catch (e) {
+    console.error(`[bot] receipt #${o.id} → admin ${adminId}:`, e.message);
+    return false;
+  }
+}
+
+async function sendReceiptToAdmins(o) {
+  if (!bot) return;
+  await Promise.all(admins.all().map((id) => sendReceiptTo(id, o)));
+}
+
 async function notifyClient(o) {
   try {
     await bot.api.sendMessage(o.userId,
@@ -119,9 +151,14 @@ async function notifyClient(o) {
 
 async function onOrderEvent({ order, type }) {
   await sendOrUpdateOrderAdmin(order);
+  if (type === 'receipt') {
+    await sendReceiptToAdmins(order);
+  }
   if (type === 'paid') {
     await broadcast(
-      `🔔 <b>Клиент нажал «Я оплатил» по заявке #${order.id}!</b>\nПроверьте поступление ${fmtRub(order.payRub || order.rub)} и подтвердите завершение.`,
+      `🔔 <b>Клиент нажал «Я оплатил» по заявке #${order.id}!</b>\n` +
+      `Проверьте поступление ${fmtRub(order.payRub || order.rub)} и подтвердите завершение.\n` +
+      (order.receipt ? `🧾 Чек прикреплён: ${esc(order.receipt.name)} (${fmtSize(order.receipt.size)}).` : '🧾 Чек: нет ⚠️'),
       { parse_mode: 'HTML', reply_markup: orderKb(order) }
     );
   }
@@ -142,7 +179,8 @@ async function mainMenu(ctx, edit = false) {
   const text =
     `🌌 <b>VEGA | Official</b> — пульт оператора\n` +
     `${s.online ? '🟢 Обменник <b>ОНЛАЙН</b>' : '🔴 Обменник <b>ОФФЛАЙН</b>'}\n` +
-    `₿ ${fmtRub(s.rateBTC)} · Ł ${fmtRub(s.rateLTC)}\n` +
+    `₿ ${fmtRub(s.rateBTC)} · Ł ${fmtRub(s.rateLTC)} (комиссия ${s.feePercent ?? 0}%)\n` +
+    `Официальный курс ${s.rateUpdatedAt ? 'от ' + fmtDate(s.rateUpdatedAt) + ` (${esc(s.rateSource || '?')})` : 'ещё не подтянут — действуют стартовые курсы'}\n` +
     `Активных заявок: ${active}`;
   if (edit) await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb }).catch(() => {});
   else await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
@@ -169,8 +207,8 @@ async function ordersMenu(ctx, edit = true) {
 
 function settingsKb(s) {
   return new InlineKeyboard()
-    .text('₿ Курс BTC', 's:rateBTC')
-    .text('Ł Курс LTC', 's:rateLTC')
+    .text(`💰 Комиссия ${s.feePercent ?? 0}%`, 's:fee')
+    .text('🔄 Обновить курс', 's:refresh')
     .row()
     .text('⬇️ Мин. сумма', 's:min')
     .text('⬆️ Макс. сумма', 's:max')
@@ -188,10 +226,15 @@ function settingsKb(s) {
 }
 
 function settingsText(s) {
+  const base = s.baseRateBTC
+    ? `₿ ${fmtRub(s.baseRateBTC)} · Ł ${fmtRub(s.baseRateLTC)}`
+    : 'ещё не подтянут';
   return (
     `⚙️ <b>Настройки</b> (применяются мгновенно)\n\n` +
-    `₿ Курс BTC: <b>${fmtRub(s.rateBTC)}</b>\n` +
-    `Ł Курс LTC: <b>${fmtRub(s.rateLTC)}</b>\n` +
+    `📊 Официальный курс (авто): <b>${base}</b>\n` +
+    (s.rateUpdatedAt ? `Обновлён: ${fmtDate(s.rateUpdatedAt)} (${esc(s.rateSource || '?')})\n` : '') +
+    `💰 Комиссия: <b>${s.feePercent ?? 0}%</b> поверх официального\n` +
+    `💵 Курс для клиентов: <b>₿ ${fmtRub(s.rateBTC)} · Ł ${fmtRub(s.rateLTC)}</b>\n` +
     `Лимиты: ${fmtRub(s.minRub)} — ${fmtRub(s.maxRub)}\n` +
     `🎁 Реферальный процент: <b>${s.refPercent}%</b>\n` +
     `Статус: ${s.online ? '🟢 Онлайн' : '🔴 Оффлайн'}\n` +
@@ -237,8 +280,7 @@ async function linksMenu(ctx, edit = true) {
 /* ---------- FSM ввода от админа ---------- */
 
 const SET_FIELDS = {
-  rateBTC: { label: 'новый курс BTC (₽ за 1 BTC)', num: true },
-  rateLTC: { label: 'новый курс LTC (₽ за 1 LTC)', num: true },
+  fee: { label: 'комиссию в % поверх официального курса (0–50, например 2)', num: true, key: 'feePercent' },
   min: { label: 'минимальную сумму обмена (₽)', num: true, key: 'minRub' },
   max: { label: 'максимальную сумму обмена (₽)', num: true, key: 'maxRub' },
   ref: { label: 'реферальный процент (например 1)', num: true, key: 'refPercent' },
@@ -299,10 +341,15 @@ async function handleAdminText(ctx) {
     if (field) {
       if (field.num) {
         const n = parseNum(text);
-        if (!isFinite(n) || n <= 0) return ctx.reply('Нужно число. Пример: 10250000');
+        if (f.type === 'set:fee') {
+          if (!isFinite(n) || n < 0 || n > 50) return ctx.reply('Комиссия — число от 0 до 50. Пример: 2');
+        } else if (!isFinite(n) || n <= 0) {
+          return ctx.reply('Нужно положительное число.');
+        }
         store.mutate((db) => {
           db.settings[field.key || f.type.slice(4)] = n;
         });
+        if (f.type === 'set:fee') rates.recomputeWithFee();
       } else {
         store.mutate((db) => {
           db.settings[field.key || f.type.slice(4)] = text.slice(0, 500);
@@ -400,10 +447,20 @@ function register() {
       });
       return settingsMenu(ctx, true);
     }
+    if (d === 's:refresh') {
+      await ctx.answerCallbackQuery({ text: 'Обновляю курс…' }).catch(() => {});
+      try {
+        const { source } = await rates.refreshRates();
+        await settingsMenu(ctx, true);
+        return ctx.reply(`✅ Официальный курс обновлён (источник: ${source}). Курсы для клиентов пересчитаны с комиссией.`, { reply_markup: homeKb() });
+      } catch (e) {
+        return ctx.reply(`⚠️ Не удалось обновить курс: ${e.message}. Действуют прежние курсы.`, { reply_markup: homeKb() });
+      }
+    }
     if (d.startsWith('s:')) {
       const key = d.slice(2);
       if (SET_FIELDS[key]) {
-        flows.set(ctx.from.id, { type: d });
+        flows.set(ctx.from.id, { type: 'set:' + key });
         await ctx.editMessageText(`✍️ Отправьте ${SET_FIELDS[key].label}.\n( /cancel — отмена )`, {
           parse_mode: 'HTML',
         }).catch(() => {});
@@ -419,6 +476,11 @@ function register() {
       if (!o) return ctx.editMessageText('Заявка не найдена.', { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('↩️ Назад', 'm:orders') }).catch(() => {});
       if (!act) {
         return ctx.editMessageText(orderText(o), { parse_mode: 'HTML', reply_markup: orderKb(o) }).catch(() => {});
+      }
+      if (act === 'receipt') {
+        if (!o.receipt) return ctx.reply('Чек по этой заявке не прикреплён.');
+        await sendReceiptTo(ctx.from.id, o);
+        return;
       }
       const allowed = { req: ['new'], quote: ['new'], amt: ['details'], reject: ['new', 'details'], unpaid: ['paid'], confirm: ['details', 'paid'] };
       if (!allowed[act]?.includes(o.status)) {

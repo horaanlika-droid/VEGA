@@ -15,6 +15,13 @@ const fmtDate = (ts) => {
   return `${p(d.getDate())}.${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 
+const fmtSize = (bytes) => {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} Б`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} КБ`;
+  return `${(n / 1024 / 1024).toFixed(1)} МБ`;
+};
+
 const plural = (n, forms) => {
   const a = Math.abs(Number(n)) % 100;
   const b = a % 10;
@@ -31,4 +38,4 @@ const parseNum = (s) => {
   return isFinite(n) ? n : NaN;
 };
 
-module.exports = { esc, fmtRub, fmtCrypto, fmtDate, plural, parseNum };
+module.exports = { esc, fmtRub, fmtCrypto, fmtDate, fmtSize, plural, parseNum };

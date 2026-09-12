@@ -2,6 +2,7 @@ const config = require('./src/config');
 const store = require('./src/store');
 const { startWeb } = require('./src/web');
 const { startBot } = require('./src/bot');
+const { startRates } = require('./src/rates');
 
 console.log('🌌 VEGA | Official — BTC & LTC Exchange');
 console.log(
@@ -18,6 +19,7 @@ if (config.publicUrl && store.get().settings.publicUrl !== config.publicUrl) {
 }
 
 startWeb();
+startRates();
 startBot().catch((e) => {
   console.error('[VEGA] ошибка запуска бота:', e.message);
   console.error('[VEGA] сайт продолжит работать без бота.');
