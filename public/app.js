@@ -1,4 +1,4 @@
-/* VEGA | Official — клиентское Web App (BTC & LTC обмен) */
+/* VEGA | Official — клиентское Web App (BTC & LTC обмен + поддержка + tx) */
 (() => {
   'use strict';
 
@@ -30,7 +30,7 @@
 
   const $ = (s) => document.querySelector(s);
   const TERMINAL = ['completed', 'rejected', 'cancelled'];
-  const S = { settings: null, me: null, orders: [], order: null, tab: 'exchange', currency: 'BTC', isDemo: false, calcFrom: 'rub' };
+  const S = { settings: null, me: null, orders: [], order: null, tab: 'exchange', currency: 'BTC', isDemo: false, calcFrom: 'rub', support: [] };
 
   const STATUS = {
     new: { label: 'Подбор реквизитов', color: '#ffb648' },
@@ -41,16 +41,13 @@
     cancelled: { label: 'Отменён', color: '#8aa0b8' },
   };
 
-  /* ---------- утилиты ---------- */
-  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const esc = (s) => String(s ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', "'": '&#39;' }[c]));
   const fmtRub = (n) => Math.round(Number(n) || 0).toLocaleString('ru-RU') + ' ₽';
   const fmtCrypto = (v, cur) => {
     const n = Number(v) || 0;
     const dec = n >= 1000 ? 2 : n >= 1 ? 4 : 6;
     return n.toFixed(dec) + ' ' + cur;
   };
-  // Пересчёт «рубли ↔ крипта» по итоговому курсу (наценка уже внутри курса,
-  // отдельной строкой клиенту ничего не показываем).
   const cryptoFromRub = (rub, rate) => Math.floor(((Number(rub) || 0) / rate) * 1e8 + 1e-6) / 1e8;
   const rubFromCrypto = (crypto, rate) => Math.ceil(Number(crypto) * rate - 1e-6);
   const fmtTrim = (v) => {
@@ -69,7 +66,6 @@
     if (n < 1024 * 1024) return (n / 1024).toFixed(n < 10240 ? 1 : 0) + ' КБ';
     return (n / 1024 / 1024).toFixed(1) + ' МБ';
   };
-  // Выбранный, но ещё не отправленный чек: { orderId, file }
   let pendingReceipt = null;
   const haptic = (t) => { try { tg && tg.HapticFeedback && tg.HapticFeedback.impactOccurred(t || 'light'); } catch (e) {} };
 
@@ -125,13 +121,14 @@
     clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
     users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.4 3.4-5 6.5-5s5.7 1.6 6.5 5"/><circle cx="17" cy="9" r="2.6"/><path d="M16.5 15.2c2.6.3 4.4 1.8 5 4.8"/></svg>',
     info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></svg>',
+    chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.5 7.5L3 21l2-5.5A8.5 8.5 0 0 1 21 11.5Z"/><path d="M8 12h8"/><path d="M8 8h5"/></svg>',
     down: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16"/><path d="m6 14 6 6 6-6"/></svg>',
     copy: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
     check: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 12.5 5 5 10-11"/></svg>',
     bolt: '<svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>',
+    send: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>',
   };
 
-  /* ---------- шапка / объявление / навигация ---------- */
   function renderHeader() {
     const s = S.settings;
     let html = s.online
@@ -153,10 +150,11 @@
       ['exchange', 'Обмен', ICONS.swap],
       ['history', 'История', ICONS.clock],
       ['refs', 'Рефералы', ICONS.users],
+      ['support', 'Чат', ICONS.chat],
       ['info', 'Инфо', ICONS.info],
     ];
     $('#nav').innerHTML = items
-      .map(([id, l, ic]) => `<button data-tab="${id}" class="${S.tab === id ? 'on' : ''}">${ic}<span>${l}</span></button>`)
+      .map(([id, l, ic]) => `<button data-tab="${id}" class="${S.tab === id ? 'on' : ''}">${ic}<span>${l}</span>${id==='support' && S.support.length ? `<span class="badge">${S.support.length>99?'99+':S.support.length}</span>` : ''}</button>`)
       .join('');
     $('#nav').querySelectorAll('button').forEach((b) =>
       b.addEventListener('click', () => {
@@ -169,11 +167,11 @@
         if (S.tab === 'history') renderHistory();
         if (S.tab === 'refs') renderRefs();
         if (S.tab === 'info') renderInfo();
+        if (S.tab === 'support') renderSupport();
       })
     );
   }
 
-  /* ---------- обмен: форма ---------- */
   function renderExchange() {
     $('#view-exchange').innerHTML = `
       <div id="exForm" class="${S.order ? 'hidden' : ''}">
@@ -222,7 +220,6 @@
     const rate = cur === 'BTC' ? s.rateBTC : s.rateLTC;
     const inRub = $('#inRub');
     const inCrypto = $('#inCrypto');
-    // Пересчитываем только пассивное поле — активное не трогаем, чтобы не сбивать ввод.
     if (inRub && inCrypto) {
       if (S.calcFrom === 'crypto') {
         const c = parseFloat(inCrypto.value);
@@ -258,7 +255,6 @@
     const rate = S.currency === 'BTC' ? s.rateBTC : s.rateLTC;
     const rawRub = parseFloat($('#inRub').value);
     const rawCrypto = parseFloat($('#inCrypto').value);
-    // Клиент мог ввести сумму в любом поле: в крипте — сразу считаем рубли к оплате.
     const useCrypto = S.calcFrom === 'crypto' && isFinite(rawCrypto) && rawCrypto > 0;
     const cryptoAmount = useCrypto ? rawCrypto : null;
     const rub = useCrypto ? rubFromCrypto(rawCrypto, rate) : rawRub;
@@ -289,7 +285,6 @@
     }
   }
 
-  /* ---------- обмен: жизненный цикл заявки ---------- */
   function chip(st) {
     const m = STATUS[st] || { label: st, color: '#8aa0b8' };
     return `<span class="chip" style="color:${m.color};background:${m.color}1a;border:1px solid ${m.color}55">${m.label}</span>`;
@@ -385,8 +380,17 @@
           <svg class="okmark" viewBox="0 0 100 100"><circle cx="50" cy="50" r="41"/><path d="M32 51l13 13 24-27"/></svg>
           <div class="stage-title">Обмен завершён!</div>
           <div class="stage-sub">${fmtRub(o.payRub || o.rub)} → <b>${fmtCrypto(o.crypto, o.currency)}</b><br>отправлены на ваш кошелёк. Спасибо, что выбираете VEGA ✦</div>
+          ${o.txUrl ? `
+            <div class="tx-box">
+              <div class="tx-label">🔗 Транзакция в блокчейне</div>
+              <a class="tx-link" href="${esc(o.txUrl)}" target="_blank" rel="noopener">${esc(o.txUrl)}</a>
+              <button class="btn btn-ghost btn-sm" style="margin-top:10px" id="cpTx">${ICONS.copy}<span>Копировать ссылку</span></button>
+            </div>
+          ` : `<div class="note" style="margin-top:12px">Оператор отправит средства вручную. Ссылка на блокчейн появится здесь, если оператор её добавит.</div>`}
           <button class="btn btn-primary" style="margin-top:18px" id="btnNew">Новый обмен</button>
         </div>`;
+      const cpTx = $('#cpTx');
+      if (cpTx) cpTx.addEventListener('click', () => copyText(o.txUrl, 'Ссылка скопирована'));
       $('#btnNew').addEventListener('click', resetToForm);
     } else {
       const rej = o.status === 'rejected';
@@ -395,13 +399,13 @@
           <div class="failmark">${rej ? '🔴' : '⚪'}</div>
           <div class="stage-title">${rej ? 'Заявка отклонена' : 'Заявка отменена'}</div>
           <div class="stage-sub">${rej ? 'Оператор отклонил заявку #' + o.id + '. Если это ошибка — напишите в поддержку.' : 'Вы отменили заявку #' + o.id + '.'}</div>
+          ${o.txUrl ? `<div class="tx-box"><div class="tx-label">🔗 Блокчейн</div><a class="tx-link" href="${esc(o.txUrl)}" target="_blank" rel="noopener">${esc(o.txUrl)}</a></div>` : ''}
           <button class="btn btn-primary" style="margin-top:18px" id="btnNew">Создать заявку</button>
         </div>`;
       $('#btnNew').addEventListener('click', resetToForm);
     }
   }
 
-  /* ---------- чек PDF ---------- */
   function wireReceiptPicker(o) {
     $('#btnPick').addEventListener('click', () => { haptic('light'); $('#inReceipt').click(); });
     $('#inReceipt').addEventListener('change', (e) => {
@@ -414,7 +418,6 @@
       const fn = $('#fileName');
       if (fn) { fn.textContent = `📎 ${f.name} (${fmtSize(f.size)})`; fn.classList.remove('ok'); }
     });
-    // Перерисовка (поллинг) не должна терять уже выбранный файл.
     const picked = pendingReceipt && pendingReceipt.orderId === o.id ? pendingReceipt.file : null;
     if (picked && !o.receipt) {
       const fn = $('#fileName');
@@ -485,12 +488,11 @@
   function resetToForm() {
     S.order = null;
     haptic('light');
-    $('#exOrder').classList.add('hidden');
-    $('#exForm').classList.remove('hidden');
+    $('#exForm').classList.add('hidden');
+    $('#exOrder').classList.remove('hidden');
     renderOrderStage();
   }
 
-  /* ---------- история ---------- */
   function renderHistory() {
     const v = $('#view-history');
     if (!S.orders.length) {
@@ -506,15 +508,15 @@
           <div class="h-ic ${o.currency.toLowerCase()}">${o.currency === 'BTC' ? '₿' : 'Ł'}</div>
           <div class="h-main">
             <div class="h-top"><span>₽ → ${o.currency}</span><span>${fmtRub(o.payRub || o.rub)}</span></div>
-            <div class="h-sub"><span>#${o.id}${o.receipt ? ' 🧾' : ''} · ${fmtDate(o.createdAt)}</span>${chip(o.status)}</div>
+            <div class="h-sub"><span>#${o.id}${o.receipt ? ' 🧾' : ''}${o.txUrl ? ' 🔗' : ''} · ${fmtDate(o.createdAt)}</span>${chip(o.status)}</div>
             <div class="h-sub" style="margin-top:2px"><span>${esc(o.wallet.slice(0, 10) + '…' + o.wallet.slice(-6))}</span><b style="color:#9fd8ff">${fmtCrypto(o.crypto, o.currency)}</b></div>
+            ${o.txUrl ? `<div class="h-sub" style="margin-top:6px"><a href="${esc(o.txUrl)}" target="_blank" rel="noopener" style="color:var(--teal);font-size:11px;word-break:break-all">🔗 ${esc(o.txUrl.slice(0,50))}…</a></div>` : ''}
           </div>
         </div>`
         )
         .join('');
   }
 
-  /* ---------- рефералы ---------- */
   function renderRefs() {
     const s = S.settings;
     const v = $('#view-refs');
@@ -542,7 +544,6 @@
     if (cp) cp.addEventListener('click', () => copyText(link, 'Ссылка скопирована'));
   }
 
-  /* ---------- инфо ---------- */
   function renderInfo() {
     const s = S.settings;
     const opLink = 'https://t.me/' + String(s.operator || '').replace(/^@/, '');
@@ -564,10 +565,113 @@
           <a class="contact" href="${esc(s.chat)}" target="_blank" rel="noopener"><span class="ci">💬</span><span>Чат поддержки<small>отвечаем быстро</small></span></a>
         </div>
       </div>
+      <div class="card">
+        <div class="card-title">Поддержка в приложении</div>
+        <div class="about" style="font-size:12.5px;line-height:1.6">Напишите нам прямо здесь — отвечаем в реальном времени. Перейдите во вкладку <b>Чат</b> в нижнем меню.</div>
+        <button class="btn btn-ghost" style="margin-top:10px" id="goSupport">${ICONS.chat}<span>Открыть чат поддержки</span></button>
+      </div>
       <div class="card"><div class="about" style="text-align:center;color:var(--mut);font-size:11.5px">VEGA — быстро. Надёжно. Выгодно. ✦</div></div>`;
+    const go = $('#goSupport');
+    if (go) go.addEventListener('click', () => {
+      S.tab = 'support';
+      document.querySelectorAll('.view').forEach((v) => v.classList.add('hidden'));
+      $('#view-support').classList.remove('hidden');
+      renderNav();
+      renderSupport();
+    });
   }
 
-  /* ---------- демо-пульт оператора (только без бота) ---------- */
+  /* ---------- поддержка чат ---------- */
+  function renderSupport() {
+    const v = $('#view-support');
+    v.innerHTML = `
+      <div class="card">
+        <div class="card-title">Чат поддержки</div>
+        <div class="about" style="font-size:12px;color:var(--mut);margin-bottom:10px">Задайте вопрос оператору — отвечаем в реальном времени. Обычно отвечаем за 1–3 минуты.</div>
+        <div class="chat-box" id="chatBox">
+          <div class="chat-empty" id="chatEmpty"><div class="e-ic">💬</div>Напишите сообщение — мы на связи 24/7</div>
+          <div class="chat-list" id="chatList"></div>
+        </div>
+        <div class="chat-input">
+          <textarea id="chatInput" placeholder="Напишите сообщение..." rows="1" maxlength="2000"></textarea>
+          <button class="btn btn-primary btn-sm" id="btnSendChat">${ICONS.send}</button>
+        </div>
+        <div class="f-hint" style="margin-top:8px">Поддержка отвечает в этом чате и в Telegram. Не делитесь приватными ключами.</div>
+      </div>
+    `;
+    const input = $('#chatInput');
+    const sendBtn = $('#btnSendChat');
+    input.addEventListener('input', () => {
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 110) + 'px';
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendSupportMessage();
+      }
+    });
+    sendBtn.addEventListener('click', sendSupportMessage);
+    renderSupportMessages();
+    pollSupport(true);
+  }
+
+  function renderSupportMessages() {
+    const list = $('#chatList');
+    const empty = $('#chatEmpty');
+    if (!list) return;
+    if (!S.support.length) {
+      list.innerHTML = '';
+      if (empty) empty.style.display = 'block';
+      return;
+    }
+    if (empty) empty.style.display = 'none';
+    list.innerHTML = S.support.map((m) => {
+      const isMe = m.from === 'user';
+      return `<div class="msg ${isMe ? 'me' : 'them'}"><div class="msg-bubble">${esc(m.text).replace(/\n/g,'<br>')}</div><div class="msg-time">${fmtDate(m.at)} · ${isMe ? 'Вы' : 'Поддержка'}</div></div>`;
+    }).join('');
+    const box = $('#chatBox');
+    if (box) box.scrollTop = box.scrollHeight;
+  }
+
+  async function sendSupportMessage() {
+    const input = $('#chatInput');
+    if (!input) return;
+    const text = input.value.trim();
+    if (!text) return;
+    if (text.length > 2000) return toast('Сообщение слишком длинное');
+    input.value = '';
+    input.style.height = 'auto';
+    const btn = $('#btnSendChat');
+    if (btn) btn.disabled = true;
+    haptic('light');
+    try {
+      const r = await api('/api/support/message', { method: 'POST', body: { text, startParam } });
+      S.support.push(r.message);
+      renderSupportMessages();
+      renderNav();
+    } catch (e) {
+      toast(e.message || 'Не удалось отправить');
+      input.value = text;
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function pollSupport(force = false) {
+    if (!force && S.tab !== 'support') return;
+    try {
+      const { messages } = await api('/api/support/messages');
+      if (JSON.stringify(messages) !== JSON.stringify(S.support)) {
+        S.support = messages;
+        if (S.tab === 'support') renderSupportMessages();
+        renderNav();
+      }
+    } catch (e) {
+      // silent
+    }
+  }
+
   function renderDemoAdmin() {
     if (!S.isDemo) return;
     let el = $('#demoAdmin');
@@ -592,6 +696,14 @@
         S.order = r.order;
         renderOrderStage();
         toast('Оператор подтвердил оплату (демо)');
+      } else if (o.status === 'completed') {
+        const url = prompt('Ссылка на блокчейн (опционально):', o.txUrl || 'https://blockchair.com/bitcoin/transaction/');
+        if (url) {
+          const r = await api(`/api/admin/order/${o.id}/tx`, { method: 'POST', body: { txUrl: url } });
+          S.order = r.order;
+          renderOrderStage();
+          toast('Ссылка сохранена (демо)');
+        }
       } else if (o.status === 'details') {
         toast('Теперь клиент жмёт «Я оплатил»');
       } else {
@@ -600,7 +712,6 @@
     };
   }
 
-  /* ---------- поллинг: всё в реальном времени ---------- */
   function syncStatus(message = '') {
     $('#syncStatus').textContent = message;
     $('#syncStatus').classList.toggle('hidden', !message);
@@ -608,10 +719,24 @@
 
   async function pollOrder() {
     const current = S.order;
-    if (!current || TERMINAL.includes(current.status)) return syncStatus();
+    if (!current || TERMINAL.includes(current.status)) {
+      // even if terminal, we still want to catch txUrl updates
+      if (current && current.status === 'completed') {
+        try {
+          const { order } = await api('/api/order/' + current.id);
+          if (S.order !== current) return;
+          if (JSON.stringify(order) !== JSON.stringify(current)) {
+            S.order = order;
+            const i = S.orders.findIndex((o) => o.id === order.id);
+            if (i >= 0) S.orders[i] = order; else S.orders.unshift(order);
+            renderOrderStage();
+          }
+        } catch {}
+      }
+      return syncStatus();
+    }
     try {
       const { order } = await api('/api/order/' + current.id);
-      // Пока шёл GET, клиент мог нажать «Я оплатил», отменить или создать другую заявку.
       if (S.order !== current) return;
       syncStatus();
       if (JSON.stringify(order) !== JSON.stringify(current)) {
@@ -657,9 +782,9 @@
   }
 
   function startPolling() {
-    // Независимые запросы: сбой/зависание настроек не блокирует реквизиты.
     const running = new Set();
-    const refresh = () => Promise.all([pollOrder, pollSettings, pollProfile].map(async (poll) => {
+    const refresh = () => Promise.all([pollOrder, pollSettings, pollProfile, () => pollSupport(false)].map(async (poll) => {
+      if (typeof poll !== 'function') return;
       if (running.has(poll)) return;
       running.add(poll);
       try { await poll(); }
@@ -673,7 +798,6 @@
     if (tg && tg.onEvent) tg.onEvent('activated', refresh);
   }
 
-  /* ---------- старт ---------- */
   (async () => {
     try {
       const r = await api('/api/init', { method: 'POST', body: { startParam } });
@@ -684,6 +808,11 @@
       S.orders = m.orders;
       S.me = m.me;
       S.order = S.orders.find((o) => !TERMINAL.includes(o.status)) || null;
+      // preload support
+      try {
+        const sup = await api('/api/support/messages');
+        S.support = sup.messages || [];
+      } catch {}
     } catch (e) {
       document.getElementById('announce').textContent = '⚠️ Не удалось подключиться к серверу. Обновите страницу.';
       return;
@@ -694,7 +823,11 @@
     renderExchange();
     renderHistory();
     renderRefs();
+    renderSupport();
     renderInfo();
+    // show correct initial tab
+    document.querySelectorAll('.view').forEach((v) => v.classList.add('hidden'));
+    $('#view-' + S.tab).classList.remove('hidden');
     renderDemoAdmin();
     startPolling();
   })();

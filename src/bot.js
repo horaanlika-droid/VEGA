@@ -8,7 +8,7 @@ const receipts = require('./receipts');
 const { esc, fmtRub, fmtCrypto, fmtDate, fmtSize, parseNum } = require('./util');
 
 let bot = null;
-const flows = new Map(); // adminId -> { type, orderId? }
+const flows = new Map(); // adminId -> { type, orderId?, userId? }
 
 const isAdmin = (ctx) => ctx.chat?.type === 'private' && admins.has(ctx.from?.id);
 
@@ -37,6 +37,7 @@ function orderText(o) {
     (o.receipt
       ? `🧾 Чек: ✅ ${esc(o.receipt.name)} (${fmtSize(o.receipt.size)})\n`
       : ['details', 'paid'].includes(o.status) ? `🧾 Чек: ⏳ не прикреплён\n` : '') +
+    (o.txUrl ? `🔗 Блокчейн: ${esc(o.txUrl)}\n` : '') +
     `🕒 ${fmtDate(o.createdAt)}\n` +
     `Статус: ${STATUS_LABEL[o.status] || o.status}`
   );
@@ -57,8 +58,13 @@ function orderKb(o) {
       .row()
       .text('❌ Оплата не поступила', `o:${o.id}:unpaid`);
     if (o.receipt) kb.row().text('🧾 Получить чек', `o:${o.id}:receipt`);
+  } else if (o.status === 'completed') {
+    if (o.receipt) kb.text('🧾 Получить чек', `o:${o.id}:receipt`);
+    kb.text(o.txUrl ? '🔗 Изменить ссылку' : '🔗 Добавить ссылку на блокчейн', `o:${o.id}:tx`);
+    kb.row().text(' К списку заявок', 'm:orders');
   } else {
     if (o.receipt) kb.text('🧾 Получить чек', `o:${o.id}:receipt`).row();
+    if (o.txUrl) kb.text('🔗 Ссылка на блокчейн', `o:${o.id}:tx`).row();
     kb.text(' К списку заявок', 'm:orders');
   }
   return kb;
@@ -82,7 +88,6 @@ function sendOrUpdateOrderAdmin(order) {
           return;
         } catch (e) {
           if (/message is not modified/i.test(e.description || e.message)) return;
-          // Удалённую/недоступную для редактирования карточку отправим заново.
         }
       }
       try {
@@ -141,8 +146,19 @@ async function notifyClient(o) {
       { parse_mode: 'HTML' });
     return true;
   } catch (e) {
-    // Пользователь мог не нажать /start или заблокировать бота. API приложения уже обновлён.
     console.error(`[bot] requisites #${o.id} → client:`, e.message);
+    return false;
+  }
+}
+
+async function notifyClientTx(o) {
+  try {
+    await bot.api.sendMessage(o.userId,
+      `🔗 <b>Транзакция по заявке #${o.id} отправлена</b>\n\n${esc(o.txUrl)}\n\nПроверьте поступление ${fmtCrypto(o.crypto, o.currency)} на кошелёк:\n<code>${esc(o.wallet)}</code>`,
+      { parse_mode: 'HTML' });
+    return true;
+  } catch (e) {
+    console.error(`[bot] tx #${o.id} → client:`, e.message);
     return false;
   }
 }
@@ -162,6 +178,89 @@ async function onOrderEvent({ order, type }) {
       { parse_mode: 'HTML', reply_markup: orderKb(order) }
     );
   }
+  if (type === 'tx') {
+    await sendOrUpdateOrderAdmin(order);
+    await notifyClientTx(order);
+  }
+}
+
+/* ---------- support chat ---------- */
+
+async function onSupportMessage({ message, user }) {
+  const u = store.getUser(message.userId) || { name: user.first_name || user.name || 'Клиент', id: message.userId };
+  const fromLabel = message.from === 'user' ? '👤 Клиент' : '🛡️ Поддержка';
+  const preview = message.text.slice(0, 200);
+  const kb = new InlineKeyboard()
+    .text('💬 Ответить', `suprep:${message.userId}`)
+    .text('📂 Открыть чат', `sup:${message.userId}`);
+  const text =
+    `💬 <b>Новое сообщение поддержки</b>\n` +
+    `👤 ${esc(u.name)} · <code>${esc(message.userId)}</code>\n` +
+    `${fromLabel}: ${esc(preview)}\n` +
+    `🕒 ${fmtDate(message.at)}`;
+
+  if (message.from === 'user') {
+    await broadcast(text, { parse_mode: 'HTML', reply_markup: kb });
+  } else {
+    // admin reply -> try to notify client via bot
+    try {
+      await bot.api.sendMessage(message.userId,
+        `💬 <b>Поддержка VEGA:</b>\n${esc(message.text)}`,
+        { parse_mode: 'HTML' });
+    } catch (e) {
+      console.error(`[bot] support reply → client ${message.userId}:`, e.message);
+    }
+  }
+}
+
+function supportThreadsKb(threads) {
+  const kb = new InlineKeyboard();
+  for (const t of threads.slice(0, 10)) {
+    const user = store.getUser(t.userId);
+    const name = user ? user.name : t.userId;
+    const label = `${t.lastFrom === 'user' ? '👤' : '🛡️'} ${name} · #${t.userId.slice(-4)}`;
+    kb.text(label, `sup:${t.userId}`).row();
+  }
+  kb.text('🔄 Обновить', 'm:support').text('↩️ Назад', 'm:home');
+  return kb;
+}
+
+async function supportMenu(ctx, edit = true) {
+  const threads = store.getSupportThreads();
+  if (!threads.length) {
+    const kb = new InlineKeyboard().text('↩️ Назад', 'm:home');
+    const text = '💬 <b>Поддержка</b>\n\nСообщений пока нет. Когда клиент напишет в чат поддержки внутри приложения — диалог появится здесь.';
+    return edit
+      ? ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb }).catch(() => {})
+      : ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
+  }
+  const kb = supportThreadsKb(threads);
+  const text = '💬 <b>Чаты поддержки</b> — выберите диалог:';
+  if (edit) await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb }).catch(() => {});
+  else await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
+}
+
+async function supportThreadView(ctx, userId, edit = true) {
+  const msgs = store.getSupportMessages(userId);
+  const user = store.getUser(userId);
+  const name = user ? `${user.name} ${user.username ? '(@' + user.username + ')' : ''}` : userId;
+  let body = `💬 <b>Чат с ${esc(name)}</b> · <code>${esc(userId)}</code>\n\n`;
+  if (!msgs.length) {
+    body += 'Сообщений нет.';
+  } else {
+    for (const m of msgs.slice(-15)) {
+      const who = m.from === 'user' ? '👤 Клиент' : '🛡️ Вы';
+      body += `${who} ${fmtDate(m.at)}:\n${esc(m.text)}\n\n`;
+    }
+  }
+  const kb = new InlineKeyboard()
+    .text('💬 Ответить', `suprep:${userId}`)
+    .text('🔄 Обновить', `sup:${userId}`)
+    .row()
+    .text('📋 Все чаты', 'm:support')
+    .text('↩️ Меню', 'm:home');
+  if (edit) await ctx.editMessageText(body, { parse_mode: 'HTML', reply_markup: kb }).catch(() => {});
+  else await ctx.reply(body, { parse_mode: 'HTML', reply_markup: kb });
 }
 
 /* ---------- меню ---------- */
@@ -169,19 +268,22 @@ async function onOrderEvent({ order, type }) {
 async function mainMenu(ctx, edit = false) {
   const s = store.get().settings;
   const active = store.activeOrders().length;
+  const supportCount = store.getSupportThreads().length;
   const kb = new InlineKeyboard()
     .text(`📥 Заявки${active ? ` (${active})` : ''}`, 'm:orders')
     .text('📊 Статистика', 'm:stats')
     .row()
     .text('⚙️ Настройки', 'm:settings')
     .text('🔗 Ссылки', 'm:links')
-    .row().text('👥 Админы', 'm:admins');
+    .row()
+    .text(`💬 Поддержка${supportCount ? ` (${supportCount})` : ''}`, 'm:support')
+    .text('👥 Админы', 'm:admins');
   const text =
     `🌌 <b>VEGA | Official</b> — пульт оператора\n` +
     `${s.online ? '🟢 Обменник <b>ОНЛАЙН</b>' : '🔴 Обменник <b>ОФФЛАЙН</b>'}\n` +
     `₿ ${fmtRub(s.rateBTC)} · Ł ${fmtRub(s.rateLTC)} (комиссия ${s.feePercent ?? 0}%)\n` +
     `Официальный курс ${s.rateUpdatedAt ? 'от ' + fmtDate(s.rateUpdatedAt) + ` (${esc(s.rateSource || '?')})` : 'ещё не подтянут — действуют стартовые курсы'}\n` +
-    `Активных заявок: ${active}`;
+    `Активных заявок: ${active} · 💬 Чатов: ${supportCount}`;
   if (edit) await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb }).catch(() => {});
   else await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
 }
@@ -258,7 +360,7 @@ async function statsMenu(ctx, edit = true) {
     `🔍 Новых: ${t.new} · 💳 Ждут оплаты: ${t.details} · ⏳ Ждут подтверждения: ${t.paid}\n` +
     `🟢 Завершено: <b>${t.completed}</b> на <b>${fmtRub(t.volumeDone)}</b>\n` +
     `🔴 Отклонено/отменено: ${t.rejected}\n\n` +
-    `👥 Клиентов: ${t.users} · 🧬 С реферерами: ${t.refs}`;
+    `👥 Клиентов: ${t.users} · 🧬 С реферерами: ${t.refs} · 💬 Чатов: ${store.getSupportThreads().length}`;
   const kb = new InlineKeyboard().text('🔄 Обновить', 'm:stats').text('↩️ Назад', 'm:home');
   if (edit) await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb }).catch(() => {});
   else await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
@@ -298,18 +400,65 @@ async function requisitesPrompt(ctx, o, payRub = o.rub) {
   );
 }
 
+async function txPrompt(ctx, o) {
+  flows.set(ctx.from.id, { type: 'tx', orderId: o.id, version: o.version || 0 });
+  return ctx.reply(
+    `🔗 Заявка #${o.id} — отправьте ссылку на транзакцию в блокчейне (например https://blockchair.com/bitcoin/transaction/… или https://blockchair.com/litecoin/transaction/…).\n\nСсылка появится у клиента в завершённой заявке. Это опционально — можно оставить пустым, отправив /cancel.\n\nТекущая: ${o.txUrl ? esc(o.txUrl) : '— нет —'}\n/cancel — отмена`,
+    { parse_mode: 'HTML' }
+  );
+}
+
+async function supportReplyPrompt(ctx, userId) {
+  flows.set(ctx.from.id, { type: 'support', userId: String(userId) });
+  const user = store.getUser(userId);
+  return ctx.reply(
+    `💬 Ответ клиенту ${user ? esc(user.name) + ' ' : ''}<code>${esc(userId)}</code>.\nНапишите сообщение — оно сразу появится у клиента в приложении и уйдёт ему в Telegram, если он запускал бота.\n/cancel — отмена`,
+    { parse_mode: 'HTML' }
+  );
+}
+
 async function handleAdminText(ctx) {
   const f = flows.get(ctx.from.id);
-  if (!f) return ctx.reply('Выберите заявку через /menu, затем нажмите «Выдать реквизиты».');
+  if (!f) return ctx.reply('Выберите заявку через /menu, затем нажмите «Выдать реквизиты» или откройте чат поддержки.');
   const text = ctx.message.text.trim();
   if (/^\/(cancel|stop)(?:@\w+)?(?:\s|$)|^отмена$/i.test(text)) {
     flows.delete(ctx.from.id);
     return ctx.reply('❌ Ввод отменён.', { reply_markup: homeKb() });
   }
+  if (f.type === 'support') {
+    if (!text || text.length > 2000) return ctx.reply('Сообщение должно содержать от 1 до 2000 символов.');
+    flows.delete(ctx.from.id);
+    const msg = store.createSupportMessage(f.userId, 'admin', text);
+    await onSupportMessage({ message: msg, user: { id: f.userId } });
+    await ctx.reply(`✅ Ответ отправлен клиенту ${f.userId}.`, { reply_markup: homeKb() });
+    // покажем чат после ответа
+    const dummyCtx = ctx;
+    await supportThreadView(dummyCtx, f.userId, false).catch(() => {});
+    return;
+  }
   if (f.orderId) {
     const o = store.getOrder(f.orderId);
-    const expectedStatus = f.type === 'amt' ? 'details' : 'new';
-    if (!o || o.status !== expectedStatus || (o.version || 0) !== f.version) {
+    if (f.type === 'tx') {
+      if (!o) {
+        flows.delete(ctx.from.id);
+        return ctx.reply('Заявка не найдена.', { reply_markup: homeKb() });
+      }
+      // tx можно добавить к любой завершённой заявке, версия не критична, но проверим что заявка всё ещё completed
+      if (o.status !== 'completed') {
+        flows.delete(ctx.from.id);
+        return ctx.reply('Ссылку на блокчейн можно добавить только после подтверждения оплаты (статус «Завершена»).', { reply_markup: homeKb() });
+      }
+      // валидация URL
+      if (!/^https?:\/\/.{4,800}$/i.test(text)) {
+        return ctx.reply('Пришлите корректную ссылку, начинающуюся с https:// (до 800 символов). Пример: https://blockchair.com/bitcoin/transaction/abc…');
+      }
+      flows.delete(ctx.from.id);
+      const upd = store.updateOrder(o.id, { txUrl: text });
+      await Promise.all([sendOrUpdateOrderAdmin(upd), notifyClientTx(upd)]);
+      return ctx.reply(`✅ Ссылка на блокчейн сохранена для заявки #${o.id}:\n${text}\n\nКлиент увидит её в приложении.`, { reply_markup: homeKb() });
+    }
+    const expectedStatus = f.type === 'amt' ? 'details' : f.type === 'quote' || f.type === 'req' ? 'new' : null;
+    if (expectedStatus && (!o || o.status !== expectedStatus || (o.version || 0) !== f.version)) {
       flows.delete(ctx.from.id);
       return ctx.reply('Заявка уже изменена другим оператором или клиентом. Откройте её заново через /menu.', { reply_markup: homeKb() });
     }
@@ -370,7 +519,9 @@ function homeKb() {
     .row()
     .text('📊 Статистика', 'm:stats')
     .text('🔗 Ссылки', 'm:links')
-    .row().text('👥 Админы', 'm:admins');
+    .row()
+    .text('💬 Поддержка', 'm:support')
+    .text('👥 Админы', 'm:admins');
 }
 
 async function adminsMenu(ctx) {
@@ -388,6 +539,11 @@ function register() {
     if (!isAdmin(ctx)) return;
     flows.delete(ctx.from.id);
     return adminsMenu(ctx);
+  });
+  bot.command('support', (ctx) => {
+    if (!isAdmin(ctx)) return;
+    flows.delete(ctx.from.id);
+    return supportMenu(ctx, false);
   });
   for (const command of ['addadmin', 'removeadmin']) {
     bot.command(command, async (ctx) => {
@@ -430,7 +586,6 @@ function register() {
     if (!isAdmin(ctx)) return ctx.answerCallbackQuery({ text: '⛔️' });
     const d = ctx.callbackQuery.data;
     await ctx.answerCallbackQuery().catch(() => {});
-    // За время запроса к Telegram владелец мог отозвать доступ.
     if (!isAdmin(ctx)) return;
     flows.delete(ctx.from.id);
 
@@ -440,6 +595,16 @@ function register() {
     if (d === 'm:stats') return statsMenu(ctx, true);
     if (d === 'm:admins') return adminsMenu(ctx);
     if (d === 'm:links') return linksMenu(ctx, true);
+    if (d === 'm:support') return supportMenu(ctx, true);
+
+    if (d.startsWith('sup:')) {
+      const userId = d.slice(4);
+      return supportThreadView(ctx, userId, true);
+    }
+    if (d.startsWith('suprep:')) {
+      const userId = d.slice(7);
+      return supportReplyPrompt(ctx, userId);
+    }
 
     if (d === 's:online') {
       store.mutate((db) => {
@@ -482,6 +647,12 @@ function register() {
         await sendReceiptTo(ctx.from.id, o);
         return;
       }
+      if (act === 'tx') {
+        if (o.status !== 'completed') {
+          return ctx.reply('Ссылку на блокчейн можно добавить только после завершения заявки.', { reply_markup: homeKb() });
+        }
+        return txPrompt(ctx, o);
+      }
       const allowed = { req: ['new'], quote: ['new'], amt: ['details'], reject: ['new', 'details'], unpaid: ['paid'], confirm: ['details', 'paid'] };
       if (!allowed[act]?.includes(o.status)) {
         return ctx.reply('Действие недоступно: статус заявки уже изменился. Откройте заявку заново.', { reply_markup: homeKb() });
@@ -502,10 +673,11 @@ function register() {
       if (act === 'confirm') {
         const upd = store.updateOrder(id, { status: 'completed' });
         await sendOrUpdateOrderAdmin(upd);
-        return ctx.reply(
-          `📨 <b>Заявка #${id} завершена.</b>\nОтправьте клиенту вручную:\n🪙 <b>${fmtCrypto(upd.crypto, upd.currency)}</b>\n👛 <code>${esc(upd.wallet)}</code>`,
-          { parse_mode: 'HTML' }
+        await ctx.reply(
+          `📨 <b>Заявка #${id} завершена.</b>\nОтправьте клиенту вручную:\n🪙 <b>${fmtCrypto(upd.crypto, upd.currency)}</b>\n👛 <code>${esc(upd.wallet)}</code>\n\n💡 Теперь вы можете опционально отправить ссылку на блокчейн-транзакцию — нажмите кнопку ниже.`,
+          { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('🔗 Добавить ссылку на блокчейн', `o:${id}:tx`) }
         );
+        return;
       }
     }
   });
@@ -522,6 +694,7 @@ function createBot(options = {}) {
   bot = new Bot(config.botToken, { client: { timeoutSeconds: 15 }, ...options });
   register();
   bus.on('order_event', onOrderEvent);
+  bus.on('support_message', onSupportMessage);
   return bot;
 }
 
@@ -539,6 +712,7 @@ async function startBot() {
     .setMyCommands([
       { command: 'start', description: 'Главное меню' },
       { command: 'menu', description: 'Показать меню' },
+      { command: 'support', description: 'Чаты поддержки' },
     ])
     .catch(() => {});
 
@@ -549,12 +723,11 @@ async function startBot() {
     if (store.get().flags.onboardedAdmins?.[id]) return;
     try {
       await bot.api.sendMessage(id,
-        `🚀 <b>VEGA запущен!</b>\n🤖 @${esc(bot.botInfo.username)}\n/start — пульт оператора\n/admins — список админов\nНовые заявки будут приходить всем операторам.`,
+        `🚀 <b>VEGA запущен!</b>\n🤖 @${esc(bot.botInfo.username)}\n/start — пульт оператора\n/admins — список админов\n/support — чаты поддержки\nНовые заявки будут приходить всем операторам.`,
         { parse_mode: 'HTML' });
       store.mutate((db) => { (db.flags.onboardedAdmins ||= {})[id] = true; });
     } catch (e) { console.error(`[bot] onboarding ${id}:`, e.message); }
   }));
-  // Восстанавливаем карточки заявок, в том числе созданных до запуска бота.
   for (const order of store.activeOrders()) await sendOrUpdateOrderAdmin(order);
 
   const applyPublicUrl = async (url, notifyAdmin = true) => {

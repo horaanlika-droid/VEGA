@@ -17,6 +17,7 @@ const clientOrder = (o) => ({
   requisites: o.requisites,
   payRub: o.payRub,
   receipt: o.receipt || null,
+  txUrl: o.txUrl || null,
   createdAt: o.createdAt,
   updatedAt: o.updatedAt,
 });
@@ -34,16 +35,13 @@ function startWeb() {
   app.disable('x-powered-by');
   app.set('trust proxy', true);
   app.set('query parser', 'extended');
-  // Повышенный лимит — клиенты загружают чеки PDF в base64 (до 8 МБ файлом).
   app.use(express.json({ limit: '12mb' }));
 
-  // Персональные статусы и реквизиты нельзя отдавать из кэша браузера/CDN.
   app.use('/api', (_req, res, next) => {
     res.set('Cache-Control', 'no-store, private');
     next();
   });
 
-  // HTML не кэшируем: иначе Cloudflare/прокси могут оставить заглушку хостинга «Bot is running».
   app.use((req, res, next) => {
     if (req.method === 'GET' && (req.path === '/' || req.path === '/index.html' || req.path === '/app.js')) {
       res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
@@ -52,8 +50,6 @@ function startWeb() {
     next();
   });
 
-  // Автоопределение публичного адреса сайта (для меню TG и ссылок) —
-  // берём Host из первого внешнего захода, никаких ручных настроек.
   app.use((req, res, next) => {
     if (req.method === 'GET') {
       const proto = String(req.get('x-forwarded-proto') || 'https').split(',')[0].trim();
@@ -76,7 +72,6 @@ function startWeb() {
     next();
   });
 
-  // Аутентификация: валидный initData TG, либо демо-пользователь, если токен не задан.
   const auth = (req) => {
     const body = req.body || {};
     const q = req.query || {};
@@ -128,8 +123,6 @@ function startWeb() {
     if (!s.online) return res.status(403).json({ error: 'Обмен временно недоступен' });
     if (!['BTC', 'LTC'].includes(currency)) return res.status(400).json({ error: 'Неизвестная валюта' });
     const rate = currency === 'BTC' ? s.rateBTC : s.rateLTC;
-    // Два способа ввода: сумма в ₽ (как раньше) либо сумма в крипте —
-    // тогда рубли к оплате считаем сразу по итоговому курсу (наценка уже внутри).
     let rub = Number(req.body.rub);
     let crypto = null;
     const hasRub = req.body.rub !== undefined && req.body.rub !== null && req.body.rub !== '';
@@ -170,7 +163,6 @@ function startWeb() {
     res.json({ order: clientOrder(o) });
   });
 
-  // Чек об оплате (PDF) от клиента. Обязателен перед кнопкой «Я оплатил».
   app.post('/api/order/:id/receipt', (req, res) => {
     const a = needAuth(req, res);
     if (!a) return;
@@ -210,7 +202,6 @@ function startWeb() {
     res.json({ order: clientOrder(upd) });
   });
 
-  // Скачивание своего чека клиентом.
   app.get('/api/order/:id/receipt', (req, res) => {
     const a = needAuth(req, res);
     if (!a) return;
@@ -251,6 +242,32 @@ function startWeb() {
     res.json({ order: clientOrder(o) });
   });
 
+  /* ---------- support chat ---------- */
+  app.get('/api/support/messages', (req, res) => {
+    const a = needAuth(req, res);
+    if (!a) return;
+    const msgs = store.getSupportMessages(a.user.id);
+    res.json({ messages: msgs });
+  });
+
+  app.post('/api/support/message', (req, res) => {
+    const a = needAuth(req, res);
+    if (!a) return;
+    const text = String(req.body?.text || '').trim();
+    if (!text) return res.status(400).json({ error: 'Сообщение не может быть пустым' });
+    if (text.length > 2000) return res.status(400).json({ error: 'Сообщение слишком длинное (до 2000 символов)' });
+    store.touchUser(a.user, req.body.startParam || '');
+    const msg = store.createSupportMessage(a.user.id, 'user', text);
+    bus.emit('support_message', { message: msg, user: a.user });
+    res.json({ message: msg });
+  });
+
+  app.post('/api/support/read', (req, res) => {
+    const a = needAuth(req, res);
+    if (!a) return;
+    res.json({ ok: true });
+  });
+
   // ДЕМО-пульт оператора: существует ТОЛЬКО когда BOT_TOKEN не задан (превью без бота).
   if (!config.botToken) {
     app.post('/api/admin/order/:id/req', (req, res) => {
@@ -268,6 +285,7 @@ function startWeb() {
       const o = store.getOrder(req.params.id);
       if (!o) return res.status(404).json({ error: 'not found' });
       const upd = store.updateOrder(o.id, { status: 'completed' });
+      bus.emit('order_event', { order: upd, type: 'completed' });
       res.json({ order: clientOrder(upd) });
     });
     app.post('/api/admin/order/:id/reject', (req, res) => {
@@ -275,6 +293,23 @@ function startWeb() {
       if (!o) return res.status(404).json({ error: 'not found' });
       const upd = store.updateOrder(o.id, { status: 'rejected' });
       res.json({ order: clientOrder(upd) });
+    });
+    app.post('/api/admin/order/:id/tx', (req, res) => {
+      const o = store.getOrder(req.params.id);
+      if (!o) return res.status(404).json({ error: 'not found' });
+      const url = String(req.body?.txUrl || '').trim().slice(0, 800);
+      if (!url) return res.status(400).json({ error: 'Ссылка не может быть пустой' });
+      const upd = store.updateOrder(o.id, { txUrl: url });
+      bus.emit('order_event', { order: upd, type: 'tx' });
+      res.json({ order: clientOrder(upd) });
+    });
+    app.post('/api/admin/support/:userId/reply', (req, res) => {
+      const userId = String(req.params.userId);
+      const text = String(req.body?.text || '').trim();
+      if (!text) return res.status(400).json({ error: 'empty' });
+      const msg = store.createSupportMessage(userId, 'admin', text);
+      bus.emit('support_message', { message: msg, user: { id: userId } });
+      res.json({ message: msg });
     });
   }
 
