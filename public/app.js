@@ -65,6 +65,15 @@
     toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
   }
 
+  function readFileAsDataURL(file) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = () => reject(new Error('Не удалось прочитать файл'));
+      fr.readAsDataURL(file);
+    });
+  }
+
   async function copyText(t, msg) {
     try {
       await navigator.clipboard.writeText(t);
@@ -282,15 +291,43 @@
             <button class="btn btn-ghost btn-sm" id="cpSum">${ICONS.copy}<span>Сумма</span></button>
             <button class="btn btn-ghost btn-sm" id="cpReq">${ICONS.copy}<span>Реквизиты</span></button>
           </div>
-          <div class="note">Переведите <b>точную сумму</b> по реквизитам выше, затем нажмите кнопку ниже. После подтверждения оператор отправит ${fmtCrypto(o.crypto, o.currency)} на ваш кошелёк.</div>
-          <button class="btn btn-primary" style="margin-top:14px" id="btnPaid">${ICONS.check}<span>Я оплатил</span></button>
+          <div class="note">Переведите <b>точную сумму</b> по реквизитам выше и прикрепите <b>чек об оплате</b> (PDF или фото из банка). После подтверждения оператор отправит ${fmtCrypto(o.crypto, o.currency)} на ваш кошелёк.</div>
+          <div class="receipt-row">
+            <input type="file" id="inReceipt" accept="application/pdf,image/jpeg,image/png,image/webp" style="display:none">
+            <button class="btn btn-ghost btn-sm" id="btnPickReceipt">📎<span>Прикрепить чек</span></button>
+            <div class="receipt-name hidden" id="receiptLabel"></div>
+          </div>
+          <button class="btn btn-primary" style="margin-top:14px" id="btnPaid">${ICONS.check}<span>Отправить чек и подтвердить оплату</span></button>
           <button class="btn btn-ghost" style="margin-top:8px" id="btnCancel">Отменить заявку</button>
         </div>`;
       $('#cpSum').addEventListener('click', () => copyText(String(Math.round(o.payRub || o.rub)), 'Сумма скопирована'));
       $('#cpReq').addEventListener('click', () => copyText(o.requisites || '', 'Реквизиты скопированы'));
+      const inReceipt = $('#inReceipt');
+      $('#btnPickReceipt').addEventListener('click', () => inReceipt.click());
+      inReceipt.addEventListener('change', () => {
+        const f = inReceipt.files && inReceipt.files[0];
+        const label = $('#receiptLabel');
+        label.textContent = f ? `📄 ${f.name}` : '';
+        label.classList.toggle('hidden', !f);
+      });
       $('#btnPaid').addEventListener('click', async () => {
+        const f = inReceipt.files && inReceipt.files[0];
+        if (!f) { toast('Сначала прикрепите чек — PDF или фото'); inReceipt.click(); return; }
+        if (!/^(application\/pdf|image\/(jpeg|png|webp))$/.test(f.type)) { toast('Формат не поддерживается: нужен PDF, JPG, PNG или WebP'); return; }
+        if (f.size > 8 * 1024 * 1024) { toast('Файл слишком большой (до 8 МБ)'); return; }
         haptic('medium');
-        await changeOrder(o, 'paid');
+        try {
+          const dataUrl = await readFileAsDataURL(f);
+          const r = await api(`/api/order/${o.id}/paid`, { method: 'POST', body: { receipt: dataUrl, name: f.name } });
+          if (S.order?.id !== o.id) return;
+          S.order = r.order;
+          syncStatus();
+          renderOrderStage();
+        } catch (e) {
+          const msg = e && e.message && !/(fetch|network|offline|failed to fetch)/i.test(e.message)
+            ? e.message : 'Не удалось отправить чек. Проверьте связь и повторите.';
+          toast(msg);
+        }
       });
       $('#btnCancel').addEventListener('click', async () => {
         haptic('light');
@@ -301,7 +338,7 @@
         <div class="card stage">
           <div class="spinner-wrap"><div class="spinner"></div><div class="spinner-ic">⏳</div></div>
           <div class="stage-title">Подтверждаем оплату</div>
-          <div class="stage-sub">Оператор проверяет поступление ${fmtRub(o.payRub || o.rub)} по заявке <b>#${o.id}</b>.<br>Как только платёж подтвердится — мы отправим ${fmtCrypto(o.crypto, o.currency)}.</div>
+          <div class="stage-sub">Оператор проверяет поступление ${fmtRub(o.payRub || o.rub)} по заявке <b>#${o.id}</b>${o.receiptName ? '.<br>🧾 Чек получен: ' + esc(o.receiptName) : ''}.<br>Как только платёж подтвердится — мы отправим ${fmtCrypto(o.crypto, o.currency)}.</div>
         </div>`;
     } else if (o.status === 'completed') {
       box.innerHTML = `
@@ -448,7 +485,7 @@
         renderOrderStage();
         toast('Оператор подтвердил оплату (демо)');
       } else if (o.status === 'details') {
-        toast('Теперь клиент жмёт «Я оплатил»');
+        toast('Теперь клиент прикрепляет чек и жмёт «Я оплатил»');
       } else {
         toast('Заявка уже в финальном статусе');
       }

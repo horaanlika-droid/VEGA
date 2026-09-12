@@ -208,15 +208,19 @@ test('removed admin cannot finish an existing flow; unauthorized callbacks do no
   assert.equal(store.getOrder(o.id).status, 'new');
 });
 
-test('paid notifications reach every admin; stale amount cannot undo payment; confirmation is idempotent', async () => {
+test('paid requires receipt; every admin gets the document; stale amount cannot undo payment; confirmation is idempotent', async () => {
   const o = await newOrder();
   await click(111, `o:${o.id}:req`);
   await text(111, 'Реквизиты');
   await click(111, `o:${o.id}:amt`);
   calls = [];
-  await api(`/api/order/${o.id}/paid`, { method: 'POST' });
+  const receipt = 'data:application/pdf;base64,' + Buffer.from('%PDF-1.4 тестовый чек').toString('base64');
+  await api(`/api/order/${o.id}/paid`, { method: 'POST', body: { receipt, name: 'check.pdf' } });
   await bus.emit('order_event', { order: store.getOrder(o.id), type: 'paid' });
-  for (const id of admins.all()) assert.ok(calls.some((c) => c.chat_id === id && c.text?.includes('Клиент нажал')));
+  for (const id of admins.all()) {
+    assert.ok(calls.some((c) => c.method === 'sendDocument' && c.chat_id === id && c.caption?.includes('Клиент нажал')), `receipt delivered to ${id}`);
+  }
+  assert.ok(store.getOrder(o.id).receipt?.name);
   await text(111, '6000');
   assert.equal(store.getOrder(o.id).status, 'paid');
   assert.equal(store.getOrder(o.id).payRub, 5000);
@@ -226,4 +230,16 @@ test('paid notifications reach every admin; stale amount cannot undo payment; co
   assert.equal(calls.filter((c) => c.text?.includes('Отправьте клиенту вручную')).length, 1);
   const { order } = await (await api(`/api/order/${o.id}`)).json();
   assert.equal(order.status, 'completed');
+});
+
+test('payment without receipt is rejected with a clear error', async () => {
+  const o = await newOrder();
+  await click(111, `o:${o.id}:req`);
+  await text(111, 'Реквизиты');
+  const r = await api(`/api/order/${o.id}/paid`, { method: 'POST', body: {} });
+  assert.equal(r.status, 400);
+  assert.equal(store.getOrder(o.id).status, 'details');
+  const bad = await api(`/api/order/${o.id}/paid`, { method: 'POST', body: { receipt: 'data:text/plain;base64,AAAA' } });
+  assert.equal(bad.status, 400);
+  assert.equal(store.getOrder(o.id).status, 'details');
 });

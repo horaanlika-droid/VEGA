@@ -1,8 +1,10 @@
-const { Bot, InlineKeyboard } = require('grammy');
+const fs = require('fs');
+const { Bot, InlineKeyboard, InputFile } = require('grammy');
 const config = require('./config');
 const store = require('./store');
 const bus = require('./bus');
 const admins = require('./admins');
+const { refreshRates } = require('./rates');
 const { esc, fmtRub, fmtCrypto, fmtDate, parseNum } = require('./util');
 
 let bot = null;
@@ -32,6 +34,7 @@ function orderText(o) {
     `🧬 Реферер: ${ref ? esc(ref.name) + ' (#' + esc(ref.id) + ')' : '—'}\n` +
     (o.requisites ? `🏦 Реквизиты: ${esc(o.requisites)}\n` : '') +
     (o.payRub ? `💰 К оплате: <b>${fmtRub(o.payRub)}</b>\n` : '') +
+    (o.receipt ? `🧾 Чек: ${esc(o.receipt.name)}\n` : '') +
     `🕒 ${fmtDate(o.createdAt)}\n` +
     `Статус: ${STATUS_LABEL[o.status] || o.status}`
   );
@@ -105,7 +108,7 @@ async function broadcast(text, options = {}) {
 async function notifyClient(o) {
   try {
     await bot.api.sendMessage(o.userId,
-      `💳 <b>Реквизиты по заявке #${o.id}</b>\n\n${esc(o.requisites)}\n\nК оплате: <b>${fmtRub(o.payRub)}</b>\nПосле перевода нажмите «Я оплатил» в приложении.`,
+      `💳 <b>Реквизиты по заявке #${o.id}</b>\n\n${esc(o.requisites)}\n\nК оплате: <b>${fmtRub(o.payRub)}</b>\nПосле перевода прикрепите чек (PDF или фото) и нажмите «Я оплатил» в приложении.`,
       { parse_mode: 'HTML' });
     return true;
   } catch (e) {
@@ -120,10 +123,28 @@ async function notifyClient(o) {
 async function onOrderEvent({ order, type }) {
   await sendOrUpdateOrderAdmin(order);
   if (type === 'paid') {
-    await broadcast(
-      `🔔 <b>Клиент нажал «Я оплатил» по заявке #${order.id}!</b>\nПроверьте поступление ${fmtRub(order.payRub || order.rub)} и подтвердите завершение.`,
-      { parse_mode: 'HTML', reply_markup: orderKb(order) }
-    );
+    const caption =
+      `🔔 <b>Клиент нажал «Я оплатил» по заявке #${order.id}!</b>\n` +
+      `👤 ${esc(order.userName)}${order.userUsername ? ' (@' + esc(order.userUsername) + ')' : ''}\n` +
+      `Проверьте поступление ${fmtRub(order.payRub || order.rub)} и подтвердите завершение.`;
+    await Promise.all(admins.all().map(async (id) => {
+      try {
+        if (order.receipt && fs.existsSync(order.receipt.path)) {
+          await bot.api.sendDocument(id, new InputFile(order.receipt.path), {
+            caption,
+            parse_mode: 'HTML',
+            reply_markup: orderKb(order),
+          });
+        } else {
+          await bot.api.sendMessage(id, caption + '\n(файл чека не найден на сервере)', {
+            parse_mode: 'HTML',
+            reply_markup: orderKb(order),
+          });
+        }
+      } catch (e) {
+        console.error(`[bot] paid #${order.id} → admin ${id}:`, e.message);
+      }
+    }));
   }
 }
 
@@ -142,7 +163,7 @@ async function mainMenu(ctx, edit = false) {
   const text =
     `🌌 <b>VEGA | Official</b> — пульт оператора\n` +
     `${s.online ? '🟢 Обменник <b>ОНЛАЙН</b>' : '🔴 Обменник <b>ОФФЛАЙН</b>'}\n` +
-    `₿ ${fmtRub(s.rateBTC)} · Ł ${fmtRub(s.rateLTC)}\n` +
+    `₿ ${fmtRub(store.clientRate('BTC'))} · Ł ${fmtRub(store.clientRate('LTC'))}\n` +
     `Активных заявок: ${active}`;
   if (edit) await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb }).catch(() => {});
   else await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
@@ -169,8 +190,10 @@ async function ordersMenu(ctx, edit = true) {
 
 function settingsKb(s) {
   return new InlineKeyboard()
-    .text('₿ Курс BTC', 's:rateBTC')
-    .text('Ł Курс LTC', 's:rateLTC')
+    .text('₿ Комиссия BTC', 's:commissionBTC')
+    .text('Ł Комиссия LTC', 's:commissionLTC')
+    .row()
+    .text('🔄 Обновить курс', 's:rates')
     .row()
     .text('⬇️ Мин. сумма', 's:min')
     .text('⬆️ Макс. сумма', 's:max')
@@ -188,10 +211,16 @@ function settingsKb(s) {
 }
 
 function settingsText(s) {
+  const updated = s.ratesUpdatedAt ? fmtDate(s.ratesUpdatedAt) : '—';
   return (
     `⚙️ <b>Настройки</b> (применяются мгновенно)\n\n` +
-    `₿ Курс BTC: <b>${fmtRub(s.rateBTC)}</b>\n` +
-    `Ł Курс LTC: <b>${fmtRub(s.rateLTC)}</b>\n` +
+    `📈 <b>Официальный курс</b> (обновляется автоматически):\n` +
+    `₿ BTC: <b>${fmtRub(s.marketBTC)}</b> · Ł LTC: <b>${fmtRub(s.marketLTC)}</b>\n` +
+    `🕒 Обновлено: ${updated}\n\n` +
+    `💸 <b>Комиссия сервиса</b>:\n` +
+    `₿ BTC: <b>${s.commissionBTC}%</b> · Ł LTC: <b>${s.commissionLTC}%</b>\n\n` +
+    `💱 <b>Курс для клиентов</b>:\n` +
+    `₿ BTC: <b>${fmtRub(store.clientRate('BTC'))}</b> · Ł LTC: <b>${fmtRub(store.clientRate('LTC'))}</b>\n\n` +
     `Лимиты: ${fmtRub(s.minRub)} — ${fmtRub(s.maxRub)}\n` +
     `🎁 Реферальный процент: <b>${s.refPercent}%</b>\n` +
     `Статус: ${s.online ? '🟢 Онлайн' : '🔴 Оффлайн'}\n` +
@@ -237,11 +266,11 @@ async function linksMenu(ctx, edit = true) {
 /* ---------- FSM ввода от админа ---------- */
 
 const SET_FIELDS = {
-  rateBTC: { label: 'новый курс BTC (₽ за 1 BTC)', num: true },
-  rateLTC: { label: 'новый курс LTC (₽ за 1 LTC)', num: true },
-  min: { label: 'минимальную сумму обмена (₽)', num: true, key: 'minRub' },
-  max: { label: 'максимальную сумму обмена (₽)', num: true, key: 'maxRub' },
-  ref: { label: 'реферальный процент (например 1)', num: true, key: 'refPercent' },
+  commissionBTC: { label: 'комиссию для BTC в % (наценка к официальному курсу, например 2)', num: true, min: 0, max: 100 },
+  commissionLTC: { label: 'комиссию для LTC в % (наценка к официальному курсу, например 2)', num: true, min: 0, max: 100 },
+  min: { label: 'минимальную сумму обмена (₽)', num: true, key: 'minRub', min: 1 },
+  max: { label: 'максимальную сумму обмена (₽)', num: true, key: 'maxRub', min: 1 },
+  ref: { label: 'реферальный процент (например 1)', num: true, key: 'refPercent', min: 0, max: 100 },
   ann: { label: 'текст объявления для сайта' },
   op: { label: 'юзернейм оператора (например @VEGA_obmen)' },
   ch: { label: 'ссылку на канал' },
@@ -294,18 +323,20 @@ async function handleAdminText(ctx) {
       return ctx.reply(`✅ Сумма заявки #${o.id} обновлена в приложении: ${fmtRub(pay)}.`, { reply_markup: homeKb() });
     }
   }
-  if (f.type && f.type.startsWith('set:')) {
-    const field = SET_FIELDS[f.type.slice(4)];
+  if (f.type && f.type.startsWith('s:')) {
+    const field = SET_FIELDS[f.type.slice(2)];
     if (field) {
       if (field.num) {
         const n = parseNum(text);
-        if (!isFinite(n) || n <= 0) return ctx.reply('Нужно число. Пример: 10250000');
+        if (!isFinite(n)) return ctx.reply('Нужно число. Пример: 2');
+        if (field.min != null && n < field.min) return ctx.reply(`Минимальное значение — ${field.min}.`);
+        if (field.max != null && n > field.max) return ctx.reply(`Максимальное значение — ${field.max}.`);
         store.mutate((db) => {
-          db.settings[field.key || f.type.slice(4)] = n;
+          db.settings[field.key || f.type.slice(2)] = n;
         });
       } else {
         store.mutate((db) => {
-          db.settings[field.key || f.type.slice(4)] = text.slice(0, 500);
+          db.settings[field.key || f.type.slice(2)] = text.slice(0, 500);
         });
       }
       flows.delete(ctx.from.id);
@@ -399,6 +430,13 @@ function register() {
         db.settings.online = !db.settings.online;
       });
       return settingsMenu(ctx, true);
+    }
+    if (d === 's:rates') {
+      await ctx.editMessageText('🔄 Обновляю официальный курс…', { parse_mode: 'HTML' }).catch(() => {});
+      const ok = await refreshRates();
+      await settingsMenu(ctx, true);
+      if (!ok) await ctx.reply('⚠️ Не удалось получить курс ни от одного источника. Проверьте сеть и повторите позже.', { reply_markup: homeKb() });
+      return;
     }
     if (d.startsWith('s:')) {
       const key = d.slice(2);

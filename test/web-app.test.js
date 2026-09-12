@@ -112,11 +112,13 @@ test('late GET cannot overwrite a successful payment action', async (t) => {
   const pending = deferred();
   a.handle((url) => {
     if (url === '/api/order/1') return pending.promise;
-    if (url === '/api/order/1/paid') return a.json({ order: { ...details, status: 'paid' } });
+    if (url === '/api/order/1/paid') return a.json({ order: { ...details, status: 'paid', receiptName: 'check.pdf' } });
   });
   const polling = a.refresh();
+  const file = new a.window.File(['%PDF-1.4'], 'check.pdf', { type: 'application/pdf' });
+  Object.defineProperty(a.document.querySelector('#inReceipt'), 'files', { value: [file], configurable: true });
   a.document.querySelector('#btnPaid').click();
-  await tick();
+  await new Promise((r) => setTimeout(r, 10));
   assert.match(a.document.querySelector('#exOrder').textContent, /Подтверждаем оплату/);
   pending.resolve(a.json({ order: details }));
   await polling;
@@ -127,9 +129,24 @@ test('late GET cannot overwrite a successful payment action', async (t) => {
 test('failed payment action gives feedback and keeps requisites available', async (t) => {
   const a = await app(t, details);
   a.handle((url) => url.endsWith('/paid') ? Promise.reject(new Error('offline')) : null);
+  const file = new a.window.File(['%PDF-1.4'], 'check.pdf', { type: 'application/pdf' });
+  Object.defineProperty(a.document.querySelector('#inReceipt'), 'files', { value: [file], configurable: true });
   a.document.querySelector('#btnPaid').click();
-  await tick();
-  assert.match(a.document.querySelector('#toast').textContent, /Не удалось отправить действие/);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.match(a.document.querySelector('#toast').textContent, /Не удалось отправить чек/);
   assert.ok(a.document.querySelector('#btnPaid'));
+  assert.equal(a.document.querySelector('#reqBox').textContent, details.requisites);
+});
+
+test('payment without a receipt prompts to attach one and does not send', async (t) => {
+  const a = await app(t, details);
+  let paidCalls = 0;
+  a.handle((url) => {
+    if (url === '/api/order/1/paid') { paidCalls++; return a.json({ order: { ...details, status: 'paid' } }); }
+  });
+  a.document.querySelector('#btnPaid').click();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(paidCalls, 0);
+  assert.match(a.document.querySelector('#toast').textContent, /прикрепите чек/i);
   assert.equal(a.document.querySelector('#reqBox').textContent, details.requisites);
 });

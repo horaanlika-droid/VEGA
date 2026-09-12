@@ -7,8 +7,12 @@ const DB_FILE = path.join(DATA_DIR, 'db.json');
 const defaults = () => ({
   seq: 1,
   settings: {
-    rateBTC: 10250000, // ₽ за 1 BTC
-    rateLTC: 9400, // ₽ за 1 LTC
+    // Официальный рыночный курс обновляется автоматически; комиссию задаёт оператор.
+    marketBTC: 10250000, // ₽ за 1 BTC (официальный курс)
+    marketLTC: 9400, // ₽ за 1 LTC (официальный курс)
+    commissionBTC: 0, // наценка к официальному курсу, %
+    commissionLTC: 0,
+    ratesUpdatedAt: null,
     minRub: 3000,
     maxRub: 300000,
     online: true,
@@ -37,6 +41,12 @@ function load() {
       const raw = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
       db = Object.assign(defaults(), raw);
       db.settings = Object.assign(defaults().settings, raw.settings || {});
+      // Миграция со старой схемы: ручной курс становится официальным (market), комиссия 0.
+      const rs = raw.settings || {};
+      if (rs.rateBTC != null && rs.marketBTC == null) db.settings.marketBTC = rs.rateBTC;
+      if (rs.rateLTC != null && rs.marketLTC == null) db.settings.marketLTC = rs.rateLTC;
+      delete db.settings.rateBTC;
+      delete db.settings.rateLTC;
       return;
     }
   } catch (e) {
@@ -68,11 +78,24 @@ const mutate = (fn) => {
   return r;
 };
 
+// Курс для клиента: официальный курс + комиссия оператора.
+const clientRate = (currency) => {
+  const s = db.settings;
+  const market = currency === 'BTC' ? s.marketBTC : s.marketLTC;
+  const commission = currency === 'BTC' ? s.commissionBTC : s.commissionLTC;
+  return Math.round((Number(market) || 0) * (1 + (Number(commission) || 0) / 100));
+};
+
 function publicSettings() {
   const s = db.settings;
   return {
-    rateBTC: s.rateBTC,
-    rateLTC: s.rateLTC,
+    rateBTC: clientRate('BTC'),
+    rateLTC: clientRate('LTC'),
+    marketBTC: s.marketBTC,
+    marketLTC: s.marketLTC,
+    commissionBTC: s.commissionBTC,
+    commissionLTC: s.commissionLTC,
+    ratesUpdatedAt: s.ratesUpdatedAt || null,
     minRub: s.minRub,
     maxRub: s.maxRub,
     online: !!s.online,
@@ -192,9 +215,11 @@ function stats() {
 load();
 
 module.exports = {
+  DATA_DIR,
   get,
   mutate,
   publicSettings,
+  clientRate,
   touchUser,
   getUser,
   createOrder,

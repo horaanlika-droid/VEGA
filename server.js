@@ -2,6 +2,7 @@ const config = require('./src/config');
 const store = require('./src/store');
 const { startWeb } = require('./src/web');
 const { startBot } = require('./src/bot');
+const { startRatePolling } = require('./src/rates');
 
 console.log('🌌 VEGA | Official — BTC & LTC Exchange');
 console.log(
@@ -22,5 +23,8 @@ startBot().catch((e) => {
   console.error('[VEGA] ошибка запуска бота:', e.message);
   console.error('[VEGA] сайт продолжит работать без бота.');
 });
+
+// Официальный курс обновляется автоматически; интервал можно задать через RATE_INTERVAL (мс).
+startRatePolling(Number(process.env.RATE_INTERVAL) || 60000);
 
 process.on('unhandledRejection', (e) => console.error('[unhandled]', e && e.message));

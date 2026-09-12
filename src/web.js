@@ -3,6 +3,7 @@ const path = require('path');
 const config = require('./config');
 const store = require('./store');
 const bus = require('./bus');
+const { saveReceipt } = require('./receipts');
 const { validateInitData, parseUser } = require('./validate');
 
 const clientOrder = (o) => ({
@@ -15,6 +16,7 @@ const clientOrder = (o) => ({
   status: o.status,
   requisites: o.requisites,
   payRub: o.payRub,
+  receiptName: o.receipt ? o.receipt.name : null,
   createdAt: o.createdAt,
   updatedAt: o.updatedAt,
 });
@@ -32,7 +34,7 @@ function startWeb() {
   app.disable('x-powered-by');
   app.set('trust proxy', true);
   app.set('query parser', 'extended');
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '16mb' }));
 
   // Персональные статусы и реквизиты нельзя отдавать из кэша браузера/CDN.
   app.use('/api', (_req, res, next) => {
@@ -130,7 +132,7 @@ function startWeb() {
     if (wallet.length < 26 || wallet.length > 128 || /\s/.test(wallet))
       return res.status(400).json({ error: 'Проверьте адрес кошелька' });
     const user = store.touchUser(a.user, req.body.startParam || '');
-    const rate = currency === 'BTC' ? s.rateBTC : s.rateLTC;
+    const rate = store.clientRate(currency);
     const order = store.createOrder({
       userId: String(user.id),
       userName: user.name,
@@ -160,7 +162,15 @@ function startWeb() {
     const o = store.getOrder(req.params.id);
     if (!o || o.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
     if (o.status === 'details') {
-      const upd = store.updateOrder(o.id, { status: 'paid' });
+      // Клиент прикладывает чек об оплате (PDF или фото) — только после этого
+      // заявка переходит в статус «оплачено» на проверку оператору.
+      let receipt = null;
+      try {
+        receipt = saveReceipt(req.body.receipt, o.id);
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+      const upd = store.updateOrder(o.id, { status: 'paid', receipt });
       bus.emit('order_event', { order: upd, type: 'paid' });
       return res.json({ order: clientOrder(upd) });
     }
