@@ -32,8 +32,18 @@ const clientUser = (u) => ({
 function startWeb() {
   const app = express();
   app.disable('x-powered-by');
+  app.set('trust proxy', true);
   app.set('query parser', 'extended');
   app.use(express.json({ limit: '1mb' }));
+
+  // HTML не кэшируем: иначе Cloudflare/прокси могут оставить заглушку хостинга «Bot is running».
+  app.use((req, res, next) => {
+    if (req.method === 'GET' && (req.path === '/' || req.path === '/index.html')) {
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+      res.set('Pragma', 'no-cache');
+    }
+    next();
+  });
 
   // Автоопределение публичного адреса сайта (для меню TG и ссылок) —
   // берём Host из первого внешнего захода, никаких ручных настроек.
@@ -193,12 +203,29 @@ function startWeb() {
     });
   }
 
-  app.use(express.static(path.join(__dirname, '..', 'public')));
-  app.use((req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
+  const publicDir = path.join(__dirname, '..', 'public');
+  const indexFile = path.join(publicDir, 'index.html');
 
-  app.listen(config.port, '0.0.0.0', () => {
-    console.log(`[VEGA] веб-сервер запущен на порту ${config.port}`);
+  app.get('/health', (_req, res) => res.json({ ok: true, name: 'VEGA' }));
+  app.use(express.static(publicDir));
+  app.use((req, res) => res.sendFile(indexFile));
+
+  const server = app.listen(config.port, config.host, () => {
+    console.log(
+      `[VEGA] веб-сервер слушает ${config.host}:${config.port} (источник порта: ${config.portSource})`
+    );
+    console.log('[VEGA] откройте этот URL в браузере — должна открыться страница обменника, а не «Bot is running»');
   });
+  server.on('error', (e) => {
+    console.error(`[VEGA] не удалось занять ${config.host}:${config.port}:`, e.message);
+    if (e && e.code === 'EADDRINUSE') {
+      console.error(
+        '[VEGA] Порт занят. На бот-хостинге в Startup укажите Main File = index.js и не задавайте PORT вручную — нужен SERVER_PORT панели.'
+      );
+    }
+    process.exit(1);
+  });
+  return server;
 }
 
 module.exports = { startWeb };

@@ -16,9 +16,26 @@ function loadEnvFile() {
 }
 loadEnvFile();
 
+// Бот-хостинги (Bot-Hosting.net, Pterodactyl и т.п.) проксируют трафик
+// на SERVER_PORT. Если слушать только 8080 — снаружи будет заглушка «Bot is running».
+function resolvePort() {
+  const keys = ['SERVER_PORT', 'PORT', 'WEB_PORT', 'APP_PORT', 'HTTP_PORT'];
+  for (const k of keys) {
+    const raw = process.env[k];
+    if (raw == null || String(raw).trim() === '') continue;
+    const n = parseInt(String(raw).trim(), 10);
+    if (Number.isFinite(n) && n > 0 && n <= 65535) return { port: n, source: k };
+  }
+  return { port: 8080, source: 'default' };
+}
+
+const listen = resolvePort();
+
 module.exports = {
   botToken: (process.env.BOT_TOKEN || '').trim(),
   adminId: (process.env.ADMIN_ID || '').trim(),
-  port: parseInt(process.env.PORT || '8080', 10),
+  port: listen.port,
+  portSource: listen.source,
+  host: '0.0.0.0',
   publicUrl: ((process.env.PUBLIC_URL || '').trim().replace(/\/+$/, '')) || null,
 };
