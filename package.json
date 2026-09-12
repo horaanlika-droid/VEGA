@@ -1,0 +1,24 @@
+{
+  "name": "vega-exchange",
+  "version": "1.0.0",
+  "description": "VEGA — мануальный обменник BTC/LTC: TG Web App + админ-бот",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/horaanlika-droid/VEGA.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/horaanlika-droid/VEGA/issues"
+  },
+  "homepage": "https://github.com/horaanlika-droid/VEGA#readme",
+  "dependencies": {
+    "express": "^5.2.1",
+    "grammy": "^1.46.0"
+  }
+}
