@@ -278,7 +278,15 @@ function homeKb() {
 
 function register() {
   bot.command('start', async (ctx) => {
-    if (!isAdmin(ctx)) return ctx.reply('⛔️ Этот бот — пульт оператора обменника VEGA.');
+    if (!isAdmin(ctx)) {
+      const url = store.get().settings.publicUrl;
+      if (url) {
+        return ctx.reply('🌌 VEGA — обмен BTC и LTC', {
+          reply_markup: new InlineKeyboard().webApp('Открыть обменник', url),
+        });
+      }
+      return ctx.reply('🌌 VEGA — обменник скоро будет доступен. Откройте сайт по ссылке из панели оператора.');
+    }
     flows.delete(ctx.from.id);
     await mainMenu(ctx, false);
   });
@@ -401,21 +409,25 @@ async function startBot() {
 
   register();
   bus.on('order_event', onOrderEvent);
-  bus.on('public_url', async (url) => {
+  const applyPublicUrl = async (url, notifyAdmin = true) => {
     try {
       await bot.api.setChatMenuButton({ menu_button: { type: 'web_app', url } });
       console.log('[VEGA] кнопка меню Telegram настроена на', url);
     } catch (e) {
       console.error('[VEGA] setChatMenuButton:', e.message);
     }
-    if (config.adminId)
+    if (notifyAdmin && config.adminId)
       bot.api
         .sendMessage(
           config.adminId,
-          `🔗 Публичный адрес обменника определён автоматически:\n${url}\nОн же прописан в кнопку меню Telegram.`
+          `🔗 Публичный адрес обменника:\n${url}\nОн же прописан в кнопку меню Telegram.`
         )
         .catch(() => {});
-  });
+  };
+  bus.on('public_url', (url) => applyPublicUrl(url, true));
+  if (store.get().settings.publicUrl) {
+    applyPublicUrl(store.get().settings.publicUrl, false).catch(() => {});
+  }
 
   bot.catch((e) => console.error('[bot error]', e.message));
   bot.start();
