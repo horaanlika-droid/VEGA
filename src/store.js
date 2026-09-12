@@ -6,6 +6,7 @@ const DB_FILE = path.join(DATA_DIR, 'db.json');
 
 const defaults = () => ({
   seq: 1,
+  supportSeq: 1,
   settings: {
     rateBTC: 10250000, // ₽ за 1 BTC (итоговый, с комиссией)
     rateLTC: 9400, // ₽ за 1 LTC (итоговый, с комиссией)
@@ -30,6 +31,7 @@ const defaults = () => ({
   users: {},
   orders: [],
   flags: {},
+  support: [], // чат поддержки: { id, userId, from: 'user'|'admin', text, at }
 });
 
 let db = null;
@@ -42,6 +44,13 @@ function load() {
       const raw = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
       db = Object.assign(defaults(), raw);
       db.settings = Object.assign(defaults().settings, raw.settings || {});
+      // Миграция старых баз
+      if (!Array.isArray(db.support)) db.support = [];
+      if (!Number.isFinite(db.supportSeq)) db.supportSeq = (db.support?.length || 0) + 1;
+      for (const o of db.orders || []) {
+        if (o.txUrl === undefined) o.txUrl = null;
+        if (o.txHash === undefined) o.txHash = null;
+      }
       return;
     }
   } catch (e) {
@@ -155,6 +164,7 @@ function createOrder(o) {
       requisites: null,
       payRub: null,
       receipt: null, // { name, size, at } — чек PDF от клиента
+      txUrl: null, // ссылка на блокчейн транзакцию (опционально после подтверждения)
       referrer: o.referrer || null,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -209,6 +219,49 @@ function stats() {
   };
 }
 
+/* ---------- support chat ---------- */
+function createSupportMessage(userId, from, text) {
+  return mutate((d) => {
+    const msg = {
+      id: d.supportSeq++,
+      userId: String(userId),
+      from, // 'user' | 'admin'
+      text: String(text).slice(0, 2000),
+      at: Date.now(),
+    };
+    d.support.push(msg);
+    // ограничим хранение последними 5000 сообщениями
+    if (d.support.length > 5000) d.support.splice(0, d.support.length - 5000);
+    // обновим lastSeen пользователя если есть
+    const u = d.users[String(userId)];
+    if (u) u.lastSupportAt = msg.at;
+    return msg;
+  });
+}
+
+function getSupportMessages(userId) {
+  return db.support
+    .filter((m) => m.userId === String(userId))
+    .sort((a, b) => a.at - b.at)
+    .slice(-200);
+}
+
+function getSupportThreads() {
+  const map = new Map();
+  for (const m of db.support) {
+    const prev = map.get(m.userId);
+    if (!prev || m.at > prev.lastAt) {
+      map.set(m.userId, { userId: m.userId, lastAt: m.at, lastText: m.text, lastFrom: m.from });
+    }
+  }
+  return [...map.values()].sort((a, b) => b.lastAt - a.lastAt);
+}
+
+function countSupportUnread() {
+  // для простоты считаем все треды
+  return getSupportThreads().length;
+}
+
 load();
 
 module.exports = {
@@ -224,4 +277,8 @@ module.exports = {
   userOrders,
   activeOrders,
   stats,
+  createSupportMessage,
+  getSupportMessages,
+  getSupportThreads,
+  countSupportUnread,
 };
