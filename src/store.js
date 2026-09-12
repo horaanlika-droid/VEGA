@@ -21,6 +21,7 @@ const defaults = () => ({
     publicUrl: null,
     botUsername: null,
   },
+  admins: [], // дополнительные операторы; владельцы задаются через окружение
   users: {},
   orders: [],
   flags: {},
@@ -148,7 +149,8 @@ function createOrder(o) {
       referrer: o.referrer || null,
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      adminMsgId: null,
+      adminMsgIds: {},
+      version: 0,
     };
     d.orders.push(order);
     return order;
@@ -161,7 +163,7 @@ function updateOrder(id, patch) {
   return mutate((d) => {
     const o = d.orders.find((x) => x.id === Number(id));
     if (!o) return null;
-    Object.assign(o, patch, { updatedAt: Date.now() });
+    Object.assign(o, patch, { updatedAt: Date.now(), version: (o.version || 0) + 1 });
     return o;
   });
 }

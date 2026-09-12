@@ -5,8 +5,6 @@ const store = require('./store');
 const bus = require('./bus');
 const { validateInitData, parseUser } = require('./validate');
 
-const TERMINAL = ['completed', 'rejected', 'cancelled'];
-
 const clientOrder = (o) => ({
   id: o.id,
   rub: o.rub,
@@ -36,9 +34,15 @@ function startWeb() {
   app.set('query parser', 'extended');
   app.use(express.json({ limit: '1mb' }));
 
+  // Персональные статусы и реквизиты нельзя отдавать из кэша браузера/CDN.
+  app.use('/api', (_req, res, next) => {
+    res.set('Cache-Control', 'no-store, private');
+    next();
+  });
+
   // HTML не кэшируем: иначе Cloudflare/прокси могут оставить заглушку хостинга «Bot is running».
   app.use((req, res, next) => {
-    if (req.method === 'GET' && (req.path === '/' || req.path === '/index.html')) {
+    if (req.method === 'GET' && (req.path === '/' || req.path === '/index.html' || req.path === '/app.js')) {
       res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
       res.set('Pragma', 'no-cache');
     }
