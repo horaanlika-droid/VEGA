@@ -44,4 +44,16 @@ module.exports = {
   portSource: listen.source,
   host: '0.0.0.0',
   publicUrl: ((process.env.PUBLIC_URL || '').trim().replace(/\/+$/, '')) || null,
+
+  // --- Интеграция с 1Plat (1plat.money) ---
+  // Если переменные не заданы — работает старый ручной режим обмена.
+  oneplat: {
+    shopId: (process.env.ONEPLAT_SHOP_ID || '').trim() || null,
+    secretKey: (process.env.ONEPLAT_SECRET_KEY || '').trim() || null,
+    baseUrl: ((process.env.ONEPLAT_BASE_URL || '').trim().replace(/\/+$/, '')) || 'http://1plat.money',
+    enabled: Boolean(
+      ((process.env.ONEPLAT_SHOP_ID || '').trim()) &&
+      ((process.env.ONEPLAT_SECRET_KEY || '').trim())
+    ),
+  },
 };
