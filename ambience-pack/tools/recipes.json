@@ -1,0 +1,87 @@
+[
+  {
+    "out": "sea",
+    "seconds": 46,
+    "crossfade": 7,
+    "target_rms_dbfs": -27,
+    "layers": [
+      {
+        "file": "sea.f32",
+        "gain_db": 0
+      }
+    ]
+  },
+  {
+    "out": "rain",
+    "seconds": 50,
+    "crossfade": 8,
+    "target_rms_dbfs": -27,
+    "layers": [
+      {
+        "file": "rain.f32",
+        "gain_db": 0
+      }
+    ]
+  },
+  {
+    "out": "hearth",
+    "seconds": 42,
+    "crossfade": 5,
+    "target_rms_dbfs": -29,
+    "layers": [
+      {
+        "file": "fire.f32",
+        "gain_db": 0
+      },
+      {
+        "file": "crackle.f32",
+        "gain_db": -13,
+        "tile": true,
+        "seconds": 44
+      }
+    ]
+  },
+  {
+    "out": "forest",
+    "seconds": 44,
+    "crossfade": 6,
+    "target_rms_dbfs": -28,
+    "layers": [
+      {
+        "file": "forest.f32",
+        "gain_db": 0
+      },
+      {
+        "file": "birds.f32",
+        "gain_db": -4
+      }
+    ]
+  },
+  {
+    "out": "lullaby",
+    "seconds": 40,
+    "crossfade": 12,
+    "target_rms_dbfs": -30,
+    "layers": [
+      {
+        "file": "river.f32",
+        "gain_db": 0
+      }
+    ]
+  },
+  {
+    "out": "space",
+    "seconds": 52,
+    "crossfade": 10,
+    "target_rms_dbfs": -33,
+    "layers": [
+      {
+        "file": "shimmer.f32",
+        "gain_db": 0,
+        "tile": true,
+        "seconds": 54,
+        "tile_crossfade": 3.5
+      }
+    ]
+  }
+]
