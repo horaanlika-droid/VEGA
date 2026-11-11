@@ -1,0 +1,56 @@
+[
+  {
+    "out": "sea",
+    "seconds": 38.5,
+    "crossfade": 7,
+    "rms_dbfs": -27,
+    "peak_dbfs": -3.14,
+    "seam_dev_db": 2.2,
+    "source_rms_dbfs": -32.78
+  },
+  {
+    "out": "rain",
+    "seconds": 50,
+    "crossfade": 8,
+    "rms_dbfs": -27,
+    "peak_dbfs": -2.07,
+    "seam_dev_db": 2.3,
+    "source_rms_dbfs": -29.75
+  },
+  {
+    "out": "hearth",
+    "seconds": 42,
+    "crossfade": 5,
+    "rms_dbfs": -29,
+    "peak_dbfs": -10.54,
+    "seam_dev_db": 0.1,
+    "source_rms_dbfs": -14.23
+  },
+  {
+    "out": "forest",
+    "seconds": 37,
+    "crossfade": 6,
+    "rms_dbfs": -28,
+    "peak_dbfs": -14.73,
+    "seam_dev_db": 0.3,
+    "source_rms_dbfs": -27.65
+  },
+  {
+    "out": "lullaby",
+    "seconds": 32,
+    "crossfade": 12,
+    "rms_dbfs": -30,
+    "peak_dbfs": -6.97,
+    "seam_dev_db": 4.3,
+    "source_rms_dbfs": -39.21
+  },
+  {
+    "out": "space",
+    "seconds": 52,
+    "crossfade": 10,
+    "rms_dbfs": -33,
+    "peak_dbfs": -15.43,
+    "seam_dev_db": -0.3,
+    "source_rms_dbfs": -30.5
+  }
+]

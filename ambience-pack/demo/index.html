@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VEGA · звук — как должно звучать</title>
+<style>
+  :root {
+    --bg: #04080f;
+    --card: rgba(12, 24, 40, 0.72);
+    --line: rgba(120, 200, 220, 0.16);
+    --txt: #e8f2f8;
+    --dim: #8aa3b6;
+    --acc: #4fd6c0;
+    --acc2: #7fb6ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background:
+      radial-gradient(1100px 700px at 78% -12%, rgba(79, 214, 192, 0.16), transparent 60%),
+      radial-gradient(900px 600px at 12% 112%, rgba(127, 182, 255, 0.14), transparent 58%),
+      var(--bg);
+    color: var(--txt);
+    font: 15px/1.5 -apple-system, "Manrope", "Segoe UI", system-ui, sans-serif;
+    padding: 22px 16px 40px;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; }
+  header { text-align: center; margin-bottom: 18px; }
+  .star { color: var(--acc); letter-spacing: 6px; font-size: 13px; }
+  h1 { font-size: 26px; letter-spacing: 8px; font-weight: 300; margin: 6px 0 4px; }
+  .sub { color: var(--dim); font-size: 11.5px; letter-spacing: 3.4px; text-transform: uppercase; }
+  .lead { color: var(--dim); font-size: 13.5px; text-align: center; max-width: 620px; margin: 14px auto 22px; }
+  .lead b { color: var(--txt); font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+  button.scene {
+    text-align: left; cursor: pointer; color: var(--txt);
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 13px 14px; font: inherit; transition: .18s;
+  }
+  button.scene:hover { border-color: rgba(79, 214, 192, 0.45); transform: translateY(-1px); }
+  button.scene.on { border-color: var(--acc); box-shadow: 0 0 0 1px rgba(79, 214, 192, 0.35), 0 10px 30px -18px var(--acc); }
+  .scene .t { font-weight: 600; font-size: 15px; }
+  .scene .d { color: var(--dim); font-size: 12px; margin-top: 3px; }
+  .panel {
+    margin-top: 16px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 16px; padding: 15px 16px;
+  }
+  .row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .row + .row { margin-top: 12px; }
+  .btn {
+    cursor: pointer; font: inherit; font-weight: 600; color: #04222a;
+    background: linear-gradient(120deg, var(--acc), var(--acc2)); border: 0;
+    border-radius: 12px; padding: 10px 18px;
+  }
+  .btn.ghost { background: transparent; color: var(--txt); border: 1px solid var(--line); }
+  input[type=range] { flex: 1; min-width: 160px; accent-color: var(--acc); }
+  .now { font-size: 13px; color: var(--dim); }
+  .now b { color: var(--acc); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .hint { color: var(--dim); font-size: 12px; margin-top: 12px; }
+  code { background: rgba(255,255,255,.06); padding: 1px 5px; border-radius: 5px; font-size: 12px; }
+  .lic { margin-top: 22px; color: var(--dim); font-size: 11.5px; text-align: center; line-height: 1.7; }
+  .lic a { color: var(--acc2); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="star">✦ ✦ ✦</div>
+    <h1>VEGA · ЗВУК</h1>
+    <div class="sub">реальные записи + живая мелодия</div>
+  </header>
+
+  <p class="lead">
+    Так звучит новая версия: <b>землю</b> (лес, дождь, костёр, море) играют настоящие записи,
+    <b>мелодию</b> ведёт маленький мотив, который повторяется и транспонируется под аккорды —
+    поэтому слышится музыка, а не генератор.
+  </p>
+
+  <div class="grid" id="scenes"></div>
+
+  <div class="panel">
+    <div class="row">
+      <button class="btn" id="toggle">Играть</button>
+      <button class="btn ghost" id="next">Другая сцена</button>
+      <input type="range" id="vol" min="0" max="1" step="0.01" value="0.75" />
+      <span class="now" id="volLabel">75%</span>
+    </div>
+    <div class="row">
+      <span class="now" id="status">выберите сцену и нажмите «Играть»</span>
+    </div>
+    <div class="hint">
+      Слушайте в наушниках или на колонках 20–30 секунд: музыка входит постепенно, мотив
+      повторяется 2–3 раза, потом меняется аккорд. Обновление страницы — новый мотив.
+    </div>
+  </div>
+
+  <div class="lic">
+    Звуки — записи из открытых наборов <a href="https://github.com/biomathcode/Coolhead-Ambience">Coolhead-Ambience</a>
+    и <a href="https://github.com/EternityForest/Free-SFX">Free-SFX</a>, лицензия <b>CC0 1.0</b> (public domain):
+    можно использовать и в личных, и в коммерческих целях без указания авторства.
+  </div>
+</div>
+<script type="module">
+  import { SCENES, createEngine } from './engine.js';
+
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const engine = createEngine(ctx);
+  let current = SCENES[0];
+
+  const $ = (s) => document.querySelector(s);
+  const grid = $('#scenes');
+  for (const s of SCENES) {
+    const b = document.createElement('button');
+    b.className = 'scene';
+    b.dataset.id = s.id;
+    b.innerHTML = `<div class="t">${s.title}</div><div class="d">${s.text}</div>`;
+    b.onclick = () => select(s.id, true);
+    grid.appendChild(b);
+  }
+
+  function paint() {
+    for (const b of grid.children) b.classList.toggle('on', b.dataset.id === current.id);
+  }
+
+  async function select(id, autoplay) {
+    current = SCENES.find((s) => s.id === id);
+    paint();
+    if (autoplay) {
+      await ctx.resume();
+      const scene = await engine.play(current.id);
+      current = scene || current;
+      $('#toggle').textContent = 'Пауза';
+      $('#status').textContent = 'звучит: ' + current.title.toLowerCase();
+    }
+  }
+
+  engine.onStatus((s) => {
+    if (!s || !s.chord) return;
+    $('#status').innerHTML = `звучит: ${current.title.toLowerCase()} · аккорд <b>${s.chord}</b> · мотив <b>${s.motif}</b>`;
+  });
+
+  $('#toggle').onclick = async () => {
+    if (engine.running) {
+      engine.stop();
+      $('#toggle').textContent = 'Играть';
+      $('#status').textContent = 'пауза';
+    } else {
+      await select(current.id, true);
+    }
+  };
+
+  $('#next').onclick = () => {
+    const i = SCENES.findIndex((s) => s.id === current.id);
+    select(SCENES[(i + 1) % SCENES.length].id, engine.running);
+  };
+
+  const vol = $('#vol');
+  vol.oninput = () => {
+    engine.setVolume(Number(vol.value));
+    $('#volLabel').textContent = Math.round(vol.value * 100) + '%';
+  };
+
+  paint();
+  $('#vol').dispatchEvent(new Event('input'));
+</script>
+</body>
+</html>
