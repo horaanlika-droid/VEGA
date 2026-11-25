@@ -678,7 +678,7 @@ test('Админка в приложении: вкладки, переключе
 
   // Вкладка «Карты»: превью и сохранение.
   a.document.querySelector('#admTabs .adm-tab[data-tab="gift"]').click();
-  a.document.querySelector('#admGiftRate').value = ''; // ручной курс убираем, считаем от комиссии
+  assert.equal(a.document.querySelector('#admGiftRate'), null, 'поля ручного курса больше нет');
   a.document.querySelector('#admGiftFee').value = '10';
   a.document.querySelector('#admGiftFee').dispatchEvent(new a.window.Event('input', { bubbles: true }));
   assert.match(a.document.querySelector('#admGiftPreview').textContent, /9,00/);

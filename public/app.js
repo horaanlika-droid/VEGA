@@ -612,7 +612,7 @@
     const rule = $('#giftRule');
     if (rule) rule.textContent = `от $${minUnits} · кратно $${step}`;
     const info = $('#giftInfo');
-    if (info && dir && dir.infoNote) info.innerHTML = esc(dir.infoNote).replace(/USD/g, '<b>USD</b>').replace(/Яндекс Маркет/, '<b>Яндекс Маркет</b>');
+    if (info && dir && dir.infoNote) info.innerHTML = esc(dir.infoNote).replace(/USD/g, '<b>USD</b>');
     const limits = $('#giftLimits');
     if (limits) {
       limits.textContent = rate
@@ -1311,15 +1311,13 @@
     ['USDT_ERC20', 'USDT ERC20', 'Ethereum · надёжная сеть', 'usdt', '₮'],
   ];
   const GIFT_DIR = [['GOOGLE_USD', 'Google Gift Card', 'приём карт в USD', 'google', GIFT_ICON]];
-  const giftRateOf = (fee, manual) => {
-    const m = Number(manual);
-    if (Number.isFinite(m) && m > 0) return m;
+  const giftRateOf = (fee) => {
     const p = Number(fee);
     const safe = Number.isFinite(p) ? Math.min(Math.max(p, 0), 95) : 0;
     return Math.round((100 - safe)) / 100;
   };
-  const giftPreviewText = (fee, manual) => {
-    const rate = giftRateOf(fee, manual);
+  const giftPreviewText = (fee) => {
+    const rate = giftRateOf(fee);
     const out = Math.floor(10 * rate * 100 + 1e-6) / 100;
     return `Карта $10 → ${out.toFixed(2).replace('.', ',')} USDT`;
   };
@@ -1405,7 +1403,6 @@
     // Карты
     renderAdminDirs($('#admGiftDirs'), GIFT_DIR);
     $('#admGiftFee').value = A.giftPercent;
-    $('#admGiftRate').value = A.rateGOOGLEUSD ?? '';
     $('#admGiftErr').textContent = '';
     updateGiftPreview();
     // Чат
@@ -1442,7 +1439,7 @@
   function updateGiftPreview() {
     const el = $('#admGiftPreview');
     if (!el) return;
-    el.textContent = giftPreviewText($('#admGiftFee').value, $('#admGiftRate').value);
+    el.textContent = giftPreviewText($('#admGiftFee').value);
   }
   function wireAdminSheet() {
     document.querySelectorAll('#admTabs .adm-tab').forEach((b) =>
@@ -1456,15 +1453,13 @@
       e.currentTarget.disabled = true;
       haptic('medium');
       const fee = $('#admGiftFee').value;
-      const rate = $('#admGiftRate').value;
       saveAdmin(
-        { giftPercent: fee === '' ? 0 : Number(fee), rateGOOGLEUSD: rate === '' ? null : Number(rate) },
+        { giftPercent: fee === '' ? 0 : Number(fee) },
         $('#admGiftErr'),
         'Настройки карты сохранены ✅'
       ).finally(() => { $('#admGiftSave').disabled = false; });
     });
     $('#admGiftFee').addEventListener('input', updateGiftPreview);
-    $('#admGiftRate').addEventListener('input', updateGiftPreview);
     $('#admSessionBtn').addEventListener('click', async (e) => {
       const btn = e.currentTarget;
       const opening = !(S.admin && S.admin.online);

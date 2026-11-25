@@ -108,12 +108,10 @@
       </div>
 
       <div class="adm-pane hidden" data-pane="gift">
-        <div class="adm-note">Google Gift Card → USDT. Комиссия вычитается из номинала; пустое поле курса = считать от комиссии.</div>
+        <div class="adm-note">Google Gift Card → USDT. Курс считается из комиссии и не задаётся вручную — выплату по каждой заявке оператор подтверждает сам после проверки карты.</div>
         <div class="adm-toggles" id="admGiftDirs"></div>
         <label class="f-label" for="admGiftFee" style="margin-top:14px"><span>Комиссия карты, % от номинала</span></label>
         <div class="f-box"><input id="admGiftFee" type="number" inputmode="decimal" min="0" max="50" step="1" placeholder="0"></div>
-        <label class="f-label" for="admGiftRate" style="margin-top:10px"><span>Курс, USDT за $1 номинала</span></label>
-        <div class="f-box"><input id="admGiftRate" type="number" inputmode="decimal" min="0.01" max="100" step="0.01" placeholder="1"></div>
         <div class="adm-preview" id="admGiftPreview">Карта $10 → 10 USDT</div>
         <div class="f-err" id="admGiftErr"></div>
         <button class="btn btn-primary" style="margin-top:10px" id="admGiftSave"><span>Сохранить карты</span></button>

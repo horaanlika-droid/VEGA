@@ -810,12 +810,9 @@ test('gift commission: default 0% → $1 = 1 USDT; admin sets the commission', a
   assert.equal(s.feePercent, before.feePercent, 'общая комиссия BTC/LTC не менялась');
   assert.equal(s.feePercentUSDTTRC20, before.feePercentUSDTTRC20, 'комиссия USDT TRC20 не менялась');
   assert.equal(s.rateUSDTTRC20, before.rateUSDTTRC20, 'курс USDT TRC20 не менялся');
-  // Ручной курс карты (USDT за $1 номинала) применяется сразу.
-  await click(111, 's:rate_gift');
-  await text(111, '0,8');
-  assert.equal(store.get().settings.rateGOOGLEUSD, 0.8);
+  // Курс выводится из комиссии и отдаётся клиенту.
   const pub = await (await fetch(`http://127.0.0.1:${server.address().port}/api/settings`)).json();
-  assert.equal(pub.rates.find((r) => r.key === 'GOOGLE_USD').rate, 0.8);
+  assert.equal(pub.rates.find((r) => r.key === 'GOOGLE_USD').rate, 0.88);
   // Возвращаем комиссию 0% → снова 1:1, карта $10 → 10 USDT.
   await click(111, 's:fee_gift');
   await text(111, '0');
@@ -864,7 +861,6 @@ test('admin settings endpoint: directions toggle, fees and gift card config; cli
   const oldTrc = before.admin.feePercentUSDTTRC20;
   const oldErc = before.admin.feePercentUSDTERC20;
   const oldGift = before.admin.giftPercent;
-  const oldGoogle = before.admin.rateGOOGLEUSD;
   // Выключаем ERC20 через веб-API.
   const toggled = await api('/api/admin/settings', { id: 111, method: 'POST', body: { enabled: { USDT_ERC20: false } } });
   assert.equal(toggled.status, 200);
@@ -880,23 +876,18 @@ test('admin settings endpoint: directions toggle, fees and gift card config; cli
   const giftBody = await gift.json();
   assert.equal(giftBody.admin.giftPercent, 15);
   assert.equal(giftBody.admin.rateGOOGLEUSD, 0.85);
-  // Ручной курс карты перекрывает расчётный.
-  const manual = await api('/api/admin/settings', { id: 111, method: 'POST', body: { rateGOOGLEUSD: 0.9 } });
-  assert.equal((await manual.json()).admin.rateGOOGLEUSD, 0.9);
-  const badGift = await api('/api/admin/settings', { id: 111, method: 'POST', body: { rateGOOGLEUSD: 500 } });
-  assert.equal(badGift.status, 400);
   const badDir = await api('/api/admin/settings', { id: 111, method: 'POST', body: { enabled: { NOPE: true } } });
   assert.equal(badDir.status, 400);
   // Чисто текстовые ошибки тоже отклоняются.
   const nothing = await api('/api/admin/settings', { id: 111, method: 'POST', body: {} });
   assert.equal(nothing.status, 400);
   // Возвращаем исходные настройки.
-  await api('/api/admin/settings', { id: 111, method: 'POST', body: { enabled: { USDT_ERC20: true }, feePercent: oldFee ?? 0, feePercentUSDTTRC20: oldTrc ?? 0, feePercentUSDTERC20: oldErc ?? 0, giftPercent: oldGift ?? 0, rateGOOGLEUSD: oldGoogle ?? 1 } });
+  await api('/api/admin/settings', { id: 111, method: 'POST', body: { enabled: { USDT_ERC20: true }, feePercent: oldFee ?? 0, feePercentUSDTTRC20: oldTrc ?? 0, feePercentUSDTERC20: oldErc ?? 0, giftPercent: oldGift ?? 0 } });
   assert.equal(currencies.isEnabled(store.get().settings, 'USDT_ERC20'), true);
   assert.equal(store.get().settings.feePercent, oldFee ?? 0);
   assert.equal(store.get().settings.feePercentUSDTTRC20, oldTrc ?? 0);
   assert.equal(store.get().settings.giftPercent, oldGift ?? 0);
-  assert.equal(store.get().settings.rateGOOGLEUSD, oldGoogle ?? 1);
+  assert.equal(store.get().settings.rateGOOGLEUSD, currencies.giftRateFromPercent(oldGift ?? 0), 'курс карты всегда выводится из комиссии');
 });
 
 test('disabled gift direction rejects new cards but keeps old orders', async () => {

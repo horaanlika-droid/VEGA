@@ -55,7 +55,8 @@ function menuKb(s) {
     .text('💱 Обменять', 'c:exchange').text('📦 Мои заявки', 'c:orders').row()
     .text('💬 Поддержка', 'c:support').text('ℹ️ Инфо', 'c:info').row()
     .text('🎁 Реферальная программа', 'c:refs');
-  if (s.publicUrl) kb.row().webApp('📱 Открыть приложение', s.publicUrl);
+  // Telegram шлёт web_app только по https — иначе всё сообщение отклоняется и клиент видит тишину.
+  if (s.publicUrl && /^https:\/\//i.test(s.publicUrl)) kb.row().webApp('📱 Открыть приложение', s.publicUrl);
   return kb;
 }
 
@@ -87,7 +88,19 @@ async function show(ctx, text, kb) {
       /* сообщение уже такое или слишком старое — просто отправим новое */
     }
   }
-  return ctx.reply(text, opts);
+  try {
+    return await ctx.reply(text, opts);
+  } catch (e) {
+    // Telegram отклонил reply_markup (например, не-https web_app-ссылка) —
+    // отвечаем без кнопок, чтобы клиент не остался без ответа.
+    console.error('[clientbot] ответ отклонён Telegram:', e && e.message);
+    try {
+      return await ctx.reply(text, { parse_mode: 'HTML' });
+    } catch (e2) {
+      console.error('[clientbot] ответ без клавиатуры тоже отклонён:', e2 && e2.message);
+      return null;
+    }
+  }
 }
 
 function clientMenu(ctx) {

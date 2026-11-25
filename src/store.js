@@ -70,6 +70,10 @@ function load() {
         db.settings.giftPercent = 0;
         db.settings.rateGOOGLEUSD = 1;
       }
+      // Ручной курс карты больше не поддерживается: оператор выплачивает вручную,
+      // поэтому курс всегда выводится из комиссии. Заодно «исцеляем» базы, где
+      // курс мог застрять из-за старого ручного ввода.
+      db.settings.rateGOOGLEUSD = currencies.giftRateFromPercent(db.settings.giftPercent);
       for (const o of db.orders || []) {
         if (o.txUrl === undefined) o.txUrl = null;
         if (o.txHash === undefined) o.txHash = null;

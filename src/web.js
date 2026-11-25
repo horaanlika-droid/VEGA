@@ -191,12 +191,6 @@ const DIRECTION_KEYS = ['BTC', 'LTC', 'USDT_TRC20', 'USDT_ERC20', 'GOOGLE_USD'];
       if (v === null) return res.status(400).json({ error: 'Комиссия карты — число от 0 до 50 (%).' });
       patch.giftPercent = v;
     }
-    let manualGiftRate = null;
-    if (body.rateGOOGLEUSD !== undefined && body.rateGOOGLEUSD !== null && body.rateGOOGLEUSD !== '') {
-      const v = Number(body.rateGOOGLEUSD);
-      if (!Number.isFinite(v) || v <= 0 || v > 100) return res.status(400).json({ error: 'Курс карты — число от 0.01 до 100 USDT за $1.' });
-      manualGiftRate = v;
-    }
     // 4) Открытие/закрытие торгов
     let openTrading = null;
     if (body.online !== undefined) {
@@ -212,7 +206,7 @@ const DIRECTION_KEYS = ['BTC', 'LTC', 'USDT_TRC20', 'USDT_ERC20', 'GOOGLE_USD'];
       patch.chat = chat;
     }
     if (openTrading !== null) patch.online = openTrading;
-    if (!Object.keys(patch).length && manualGiftRate === null) {
+    if (!Object.keys(patch).length) {
       return res.status(400).json({ error: 'Нечего обновлять — пришлите хотя бы одно поле.' });
     }
     const wasOnline = !!store.get().settings.online;
@@ -228,10 +222,6 @@ const DIRECTION_KEYS = ['BTC', 'LTC', 'USDT_TRC20', 'USDT_ERC20', 'GOOGLE_USD'];
     // Пересчёт итоговых курсов после смены комиссий (курс карты выводится из giftPercent).
     if (['feePercent', 'feePercentUSDTTRC20', 'feePercentUSDTERC20', 'giftPercent'].some((k) => patch[k] !== undefined)) {
       rates.recomputeWithFee();
-    }
-    // Ручной курс карты применяется ПОСЛЕ пересчёта (как set:rate_gift в боте).
-    if (manualGiftRate !== null) {
-      store.mutate((db) => { db.settings.rateGOOGLEUSD = manualGiftRate; });
     }
     // Открытие торгов: рассылаем клиентам объявление о начале торгов.
     let announced = 0;
