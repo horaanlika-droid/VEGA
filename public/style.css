@@ -115,6 +115,8 @@ body {
 .coin-ic.rub { background: linear-gradient(140deg, #3d7dff, #00c8ff); color: #fff; }
 .coin-ic.btc { background: linear-gradient(140deg, #ffab3d, #f7931a); color: #fff; }
 .coin-ic.ltc { background: linear-gradient(140deg, #d7dee8, #8fa1b8); color: #fff; }
+.coin-ic.usdt { background: linear-gradient(140deg, #3fe0b0, #009393); color: #fff; }
+.coin-ic.google { background: linear-gradient(140deg, #4a8cff, #ff4d67); color: #fff; font-size: 14px; }
 
 .f-sep { display: flex; align-items: center; justify-content: center; padding: 9px 0; }
 .f-sep .arr {
@@ -125,6 +127,38 @@ body {
 }
 
 .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; background: rgba(2, 10, 20, 0.55); border: 1px solid var(--line); border-radius: 15px; padding: 5px; }
+/* Четыре направления (BTC / LTC / USDT TRC20 / USDT ERC20) — сетка 2×2. */
+.seg.seg-3, .seg.seg-4 { grid-template-columns: 1fr 1fr; }
+/* Пятое направление — Google Gift Card — на всю ширину */
+.seg.seg-4 button:last-child:nth-child(odd) { grid-column: 1 / -1; }
+/* Быстрые номиналы подарочных карт */
+.seg.gift-nom { grid-template-columns: repeat(4, 1fr); }
+.seg.gift-nom button { font-size: 12.5px; padding: 9px 0; }
+input[readonly] { color: #9fe8d6 !important; }
+.seg button { font-size: 12.5px; letter-spacing: .01em; gap: 5px; padding: 10px 4px; }
+.seg button .sc-sym { font-weight: 800; margin-right: 3px; }
+.seg button .sc-sym.btc { color: #f7931a; }
+.seg button .sc-sym.ltc { color: #c3d2e6; }
+.seg button .sc-sym.usdt { color: #26a17b; }
+.seg button.on .sc-sym { color: inherit; }
+/* Сноски-подсказки в форме (маркетплейсы, валюта карты, срок сделки) */
+.info-note {
+  font-size: 11.5px; line-height: 1.55; color: var(--mut);
+  background: rgba(0, 200, 255, 0.06); border: 1px solid rgba(0, 200, 255, 0.16);
+  border-radius: 12px; padding: 9px 12px;
+}
+.info-note b { color: #bfe9ff; }
+.info-warn {
+  margin-top: 8px; font-size: 11.5px; line-height: 1.5; color: #ffd08a;
+  background: rgba(255, 182, 72, 0.08); border: 1px solid rgba(255, 182, 72, 0.24);
+  border-radius: 12px; padding: 9px 12px;
+}
+.info-warn b { color: #ffdca8; }
+.net-note { margin-top: 9px; font-size: 11px; line-height: 1.45; color: var(--mut); background: rgba(0, 200, 255, 0.06); border: 1px solid rgba(0, 200, 255, 0.16); border-radius: 12px; padding: 8px 11px; }
+.net-note b { color: #bfe9ff; }
+.pay-dir { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--mut); margin-bottom: 10px; }
+.pay-dir svg { width: 14px; height: 14px; color: var(--teal); flex: none; }
+.pay-dir b { color: #cfeeff; }
 .seg button {
   border: none; border-radius: 11px; padding: 10px 0;
   background: transparent; color: var(--mut);
@@ -240,6 +274,11 @@ body {
 .h-ic { width: 40px; height: 40px; border-radius: 13px; flex: none; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 15px; }
 .h-ic.btc { background: rgba(247, 147, 26, 0.15); color: #f7931a; border: 1px solid rgba(247, 147, 26, 0.3); }
 .h-ic.ltc { background: rgba(190, 205, 225, 0.12); color: #c3d2e6; border: 1px solid rgba(190, 205, 225, 0.28); }
+.h-ic.usdt { background: rgba(38, 161, 123, 0.15); color: #35d6a4; border: 1px solid rgba(38, 161, 123, 0.32); position: relative; }
+.h-item { cursor: pointer; transition: border-color .18s, transform .12s; }
+.h-item:active { transform: scale(.995); }
+.h-ic.google { background: rgba(74, 140, 255, 0.14); color: #8db8ff; border: 1px solid rgba(74, 140, 255, 0.3); position: relative; }
+.h-ic small { position: absolute; right: -3px; bottom: -3px; font-size: 6.5px; font-weight: 800; letter-spacing: .02em; padding: 1px 3px; border-radius: 5px; background: #08202b; border: 1px solid rgba(38, 161, 123, 0.45); color: #6fe6c4; }
 .h-main { flex: 1; min-width: 0; }
 .h-top { display: flex; justify-content: space-between; gap: 8px; font-size: 13.5px; font-weight: 800; }
 .h-sub { display: flex; justify-content: space-between; gap: 8px; margin-top: 3px; font-size: 11.5px; color: var(--mut); }

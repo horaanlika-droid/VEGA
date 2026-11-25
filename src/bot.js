@@ -5,6 +5,7 @@ const bus = require('./bus');
 const admins = require('./admins');
 const rates = require('./rates');
 const receipts = require('./receipts');
+const currencies = require('./currencies');
 const { esc, fmtRub, fmtCrypto, fmtDate, fmtSize, parseNum } = require('./util');
 
 let bot = null;
@@ -16,6 +17,7 @@ const STATUS_LABEL = {
   new: '🔍 Идёт подбор реквизитов',
   details: '💳 Ожидает оплаты клиентом',
   paid: '⏳ Клиент оплатил — нужно подтверждение',
+  giftNew: '🕐 Ожидает код карты и «Я оплатил»',
   completed: '🟢 Завершена',
   rejected: '🔴 Отклонена',
   cancelled: '⚪ Отменена клиентом',
@@ -23,14 +25,34 @@ const STATUS_LABEL = {
 
 /* ---------- рендер сообщений ---------- */
 
+// Название направления: «USDT TRC20», «BTC». Старые заявки без network читаются корректно.
+const dirLabel = (o) => currencies.label(o.currency, o.network);
+const dirShort = (o) => currencies.shortLabel(o.currency, o.network);
+const cryptoText = (o, amount = o.crypto) =>
+  fmtCrypto(amount, o.currency, currencies.displayDecimals(o.currency, o.network));
+
+const isGift = (o) => o.direction === 'sell' || currencies.isGift(o.currency, o.network);
+const giftUnits = (o) => Number(o.units) || 0;
+// Выплата по гифт-карте — всегда USDT, поэтому подпись суммы отдельная.
+const payoutText = (o, amount = o.crypto) =>
+  isGift(o)
+    ? `${fmtCrypto(amount, 'USDT', 2)} (${o.network || 'USDT'})`
+    : fmtCrypto(amount, o.currency, currencies.displayDecimals(o.currency, o.network));
+
 function orderText(o) {
   const ref = o.referrer ? store.getUser(o.referrer) : null;
   return (
     `📥 <b>Заявка #${o.id}</b>\n` +
     `👤 ${esc(o.userName)}${o.userUsername ? ' (@' + esc(o.userUsername) + ')' : ''} · <code>${esc(o.userId)}</code>\n` +
     `💵 Сумма: <b>${fmtRub(o.rub)}</b>\n` +
-    `🪙 Валюта: <b>${o.currency}</b> ≈ ${fmtCrypto(o.crypto, o.currency)}\n` +
-    `👛 Кошелёк: <code>${esc(o.wallet)}</code>\n` +
+    (isGift(o)
+      ? `🎁 Карта: <b>Google Gift Card $${giftUnits(o)}</b> → выплата ${payoutText(o)}\n` +
+        `🎟 Код карты: <code>${esc(o.giftCode || '—')}</code>\n` +
+        `✅ Валюта: должна быть <b>USD</b> (рубли и другие валюты не принимаем)\n` +
+        `👛 Кошелёк клиента: <code>${esc(o.wallet || '—')}</code>\n`
+      : `🪙 Валюта: <b>${esc(dirLabel(o))}</b> ≈ ${cryptoText(o)}\n` +
+        `👛 Кошелёк: <code>${esc(o.wallet)}</code>\n`) +
+    (o.receiptName ? `🖼 Скрин карты: ${esc(o.receiptName)}\n` : '') +
     `🧬 Реферер: ${ref ? esc(ref.name) + ' (#' + esc(ref.id) + ')' : '—'}\n` +
     (o.requisites ? `🏦 Реквизиты: ${esc(o.requisites)}\n` : '') +
     (o.payRub ? `💰 К оплате: <b>${fmtRub(o.payRub)}</b>\n` : '') +
@@ -39,13 +61,32 @@ function orderText(o) {
       : ['details', 'paid'].includes(o.status) ? `🧾 Чек: ⏳ не прикреплён\n` : '') +
     (o.txUrl ? `🔗 Блокчейн: ${esc(o.txUrl)}\n` : '') +
     `🕒 ${fmtDate(o.createdAt)}\n` +
-    `Статус: ${STATUS_LABEL[o.status] || o.status}`
+    `Статус: ${
+      isGift(o)
+        ? o.status === 'new'
+          ? STATUS_LABEL.giftNew
+          : o.status === 'paid'
+            ? '🔎 Карта на проверке — подтвердите и выплатите USDT'
+            : STATUS_LABEL[o.status] || o.status
+        : STATUS_LABEL[o.status] || o.status
+    }` +
+    (o.expiresAt && !['completed', 'rejected', 'cancelled'].includes(o.status)
+      ? `\n⏳ Срок на сделку: до ${fmtDate(o.expiresAt)}`
+      : '')
   );
 }
 
 function orderKb(o) {
   const kb = new InlineKeyboard();
-  if (o.status === 'new') {
+  if (o.status === 'new' && isGift(o)) {
+    // Клиент ещё не подтвердил сделку: ждём «Я оплатил».
+    kb.text('🔄 Обновить', `o:${o.id}`).text('❌ Отклонить', `o:${o.id}:reject`);
+  } else if (o.status === 'paid' && isGift(o)) {
+    // Код прислан и клиент нажал «Я оплатил» → проверяем карту и выплачиваем USDT.
+    kb.text('✅ Карта проверена — выплатить USDT', `o:${o.id}:confirm`)
+      .row()
+      .text('❌ Карта недействительна', `o:${o.id}:unpaid`);
+  } else if (o.status === 'new') {
     kb.text('💳 Выдать реквизиты', `o:${o.id}:req`).text('❌ Отклонить', `o:${o.id}:reject`);
   } else if (o.status === 'details') {
     kb.text('✅ Оплачено (подтвердить)', `o:${o.id}:confirm`)
@@ -154,7 +195,7 @@ async function notifyClient(o) {
 async function notifyClientTx(o) {
   try {
     await bot.api.sendMessage(o.userId,
-      `🔗 <b>Транзакция по заявке #${o.id} отправлена</b>\n\n${esc(o.txUrl)}\n\nПроверьте поступление ${fmtCrypto(o.crypto, o.currency)} на кошелёк:\n<code>${esc(o.wallet)}</code>`,
+      `🔗 <b>Транзакция по заявке #${o.id} отправлена</b>\n\n${esc(o.txUrl)}\n\nПроверьте поступление ${cryptoText(o)} (${esc(dirShort(o))}) на кошелёк:\n<code>${esc(o.wallet)}</code>`,
       { parse_mode: 'HTML' });
     return true;
   } catch (e) {
@@ -171,12 +212,24 @@ async function onOrderEvent({ order, type }) {
     await sendReceiptToAdmins(order);
   }
   if (type === 'paid') {
-    await broadcast(
-      `🔔 <b>Клиент нажал «Я оплатил» по заявке #${order.id}!</b>\n` +
-      `Проверьте поступление ${fmtRub(order.payRub || order.rub)} и подтвердите завершение.\n` +
-      (order.receipt ? `🧾 Чек прикреплён: ${esc(order.receipt.name)} (${fmtSize(order.receipt.size)}).` : '🧾 Чек: нет ⚠️'),
-      { parse_mode: 'HTML', reply_markup: orderKb(order) }
-    );
+    if (isGift(order)) {
+      await broadcast(
+        `🔔 <b>Клиент подтвердил сделку по заявке #${order.id}!</b>\n` +
+        `🎁 Google Gift Card <b>$${giftUnits(order)}</b> → ${payoutText(order)}\n` +
+        `🎟 Код: <code>${esc(order.giftCode || '—')}</code>\n` +
+        `👛 Кошелёк: <code>${esc(order.wallet)}</code>\n\n` +
+        `1️⃣ Проверьте карту (номинал, валюта — <b>USD</b>, баланс).\n` +
+        `2️⃣ Нажмите «✅ Карта проверена — выплатить USDT» и отправьте ${payoutText(order)}.`,
+        { parse_mode: 'HTML', reply_markup: orderKb(order) }
+      );
+    } else {
+      await broadcast(
+        `🔔 <b>Клиент нажал «Я оплатил» по заявке #${order.id}!</b>\n` +
+        `Проверьте поступление ${fmtRub(order.payRub || order.rub)} и подтвердите завершение.\n` +
+        (order.receipt ? `🧾 Чек прикреплён: ${esc(order.receipt.name)} (${fmtSize(order.receipt.size)}).` : '🧾 Чек: нет ⚠️'),
+        { parse_mode: 'HTML', reply_markup: orderKb(order) }
+      );
+    }
   }
   if (type === 'tx') {
     await sendOrUpdateOrderAdmin(order);
@@ -265,6 +318,15 @@ async function supportThreadView(ctx, userId, edit = true) {
 
 /* ---------- меню ---------- */
 
+// Курсы всех включённых направлений — одна строка в главном меню.
+function rateLine(s) {
+  return currencies
+    .list()
+    .filter((p) => currencies.isEnabled(s, p.key) && p.direction !== 'sell')
+    .map((p) => `${p.symbol} ${fmtRub(s[p.rateKey] || 0)}`)
+    .join(' · ');
+}
+
 async function mainMenu(ctx, edit = false) {
   const s = store.get().settings;
   const active = store.activeOrders().length;
@@ -281,7 +343,7 @@ async function mainMenu(ctx, edit = false) {
   const text =
     `🌌 <b>VEGA | Official</b> — пульт оператора\n` +
     `${s.online ? '🟢 Обменник <b>ОНЛАЙН</b>' : '🔴 Обменник <b>ОФФЛАЙН</b>'}\n` +
-    `₿ ${fmtRub(s.rateBTC)} · Ł ${fmtRub(s.rateLTC)} (комиссия ${s.feePercent ?? 0}%)\n` +
+    `${rateLine(s)}\n` +
     `Официальный курс ${s.rateUpdatedAt ? 'от ' + fmtDate(s.rateUpdatedAt) + ` (${esc(s.rateSource || '?')})` : 'ещё не подтянут — действуют стартовые курсы'}\n` +
     `Активных заявок: ${active} · 💬 Чатов: ${supportCount}`;
   if (edit) await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb }).catch(() => {});
@@ -299,7 +361,8 @@ async function ordersMenu(ctx, edit = true) {
       : ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
   }
   for (const o of list.slice(0, 8)) {
-    kb.text(`#${o.id} · ${o.currency} · ${fmtRub(o.rub)} · ${o.status === 'new' ? '🔍' : o.status === 'paid' ? '⏳' : '💳'}`, `o:${o.id}`).row();
+    const amount = isGift(o) ? `🎁 $${giftUnits(o)}` : fmtRub(o.rub);
+    kb.text(`#${o.id} · ${isGift(o) ? 'Google Gift' : dirShort(o)} · ${amount} · ${o.status === 'new' ? '🔍' : o.status === 'paid' ? '⏳' : '💳'}`, `o:${o.id}`).row();
   }
   kb.text('🔄 Обновить', 'm:orders').text('↩️ Назад', 'm:home');
   const text = '📥 <b>Активные заявки</b> — нажмите, чтобы открыть:';
@@ -308,8 +371,24 @@ async function ordersMenu(ctx, edit = true) {
 }
 
 function settingsKb(s) {
+  const usdt = currencies.get('USDT_TRC20');
+  const errc = currencies.get('USDT_ERC20');
   return new InlineKeyboard()
-    .text(`💰 Комиссия ${s.feePercent ?? 0}%`, 's:fee')
+    .text(`💰 BTC/LTC ${s.feePercent ?? 0}%`, 's:fee')
+    .text(`₮ TRC20 ${s[usdt.feeKey] ?? 0}%`, 's:fee_trc20')
+    .row()
+    .text(`₮ ERC20 ${s[errc.feeKey] ?? 0}%`, 's:fee_erc20')
+    .row()
+    .text(`${currencies.isEnabled(s, 'USDT_TRC20') ? '✅' : '⛔'} USDT TRC20`, 's:dir_USDT_TRC20')
+    .text(`${currencies.isEnabled(s, 'USDT_ERC20') ? '✅' : '⛔'} USDT ERC20`, 's:dir_USDT_ERC20')
+    .row()
+    .text('✍️ Курс ₮ TRC20', 's:rate_trc20')
+    .text('✍️ Курс ₮ ERC20', 's:rate_erc20')
+    .row()
+    .text(`🎁 Gift −${s.giftPercent ?? 0}%`, 's:fee_gift')
+    .text(`${currencies.isEnabled(s, 'GOOGLE_USD') ? '✅' : '⛔'} Google Gift`, 's:dir_GOOGLE_USD')
+    .row()
+    .text('✍️ Курс Gift', 's:rate_gift')
     .text('🔄 Обновить курс', 's:refresh')
     .row()
     .text('⬇️ Мин. сумма', 's:min')
@@ -329,14 +408,21 @@ function settingsKb(s) {
 
 function settingsText(s) {
   const base = s.baseRateBTC
-    ? `₿ ${fmtRub(s.baseRateBTC)} · Ł ${fmtRub(s.baseRateLTC)}`
+    ? `₿ ${fmtRub(s.baseRateBTC)} · Ł ${fmtRub(s.baseRateLTC)}` +
+      (s.baseRateUSDT ? ` · ₮ ${s.baseRateUSDT} ₽` : ' · ₮ —')
     : 'ещё не подтянут';
+  const usdt = currencies.get('USDT_TRC20');
+  const errc = currencies.get('USDT_ERC20');
   return (
     `⚙️ <b>Настройки</b> (применяются мгновенно)\n\n` +
     `📊 Официальный курс (авто): <b>${base}</b>\n` +
     (s.rateUpdatedAt ? `Обновлён: ${fmtDate(s.rateUpdatedAt)} (${esc(s.rateSource || '?')})\n` : '') +
-    `💰 Комиссия: <b>${s.feePercent ?? 0}%</b> поверх официального\n` +
-    `💵 Курс для клиентов: <b>₿ ${fmtRub(s.rateBTC)} · Ł ${fmtRub(s.rateLTC)}</b>\n` +
+    `💰 Комиссия: <b>${s.feePercent ?? 0}%</b> BTC/LTC · ` +
+    `<b>${s[usdt.feeKey] ?? 0}%</b> USDT TRC20 · <b>${s[errc.feeKey] ?? 0}%</b> USDT ERC20\n` +
+    `💵 Курс для клиентов: <b>${rateLine(s)}</b>\n` +
+    `🎁 Google Gift: <b>${s.rateGOOGLEUSD ?? '—'} USDT за $1</b> номинала ` +
+    `(скидка ${s.giftPercent ?? 0}% · карта $10 = ${((s.rateGOOGLEUSD ?? 0) * 10).toFixed(2)} USDT)\n` +
+    `🕹 Направления: ${currencies.list().map((p) => `${p.key} ${currencies.isEnabled(s, p.key) ? '✅' : '⛔'}`).join(' · ')}\n` +
     `Лимиты: ${fmtRub(s.minRub)} — ${fmtRub(s.maxRub)}\n` +
     `🎁 Реферальный процент: <b>${s.refPercent}%</b>\n` +
     `Статус: ${s.online ? '🟢 Онлайн' : '🔴 Оффлайн'}\n` +
@@ -382,7 +468,21 @@ async function linksMenu(ctx, edit = true) {
 /* ---------- FSM ввода от админа ---------- */
 
 const SET_FIELDS = {
-  fee: { label: 'комиссию в % поверх официального курса (0–50, например 2)', num: true, key: 'feePercent' },
+  fee: { label: 'комиссию BTC/LTC в % поверх официального курса (0–50, например 2)', num: true, key: 'feePercent' },
+  fee_trc20: { label: 'комиссию USDT TRC20 в % (0–50, например 4)', num: true, key: 'feePercentUSDTTRC20' },
+  fee_erc20: { label: 'комиссию USDT ERC20 в % (0–50, например 5)', num: true, key: 'feePercentUSDTERC20' },
+  // Ручной курс USDT за 1 USDT в рублях — если автообновление недоступно.
+  rate_trc20: { label: 'курс USDT TRC20 в ₽ за 1 USDT (например 100.5)', num: true, key: 'rateUSDTTRC20' },
+  rate_erc20: { label: 'курс USDT ERC20 в ₽ за 1 USDT (например 101.5)', num: true, key: 'rateUSDTERC20' },
+  // Гифт-карты: клиент отдаёт карту, мы платим USDT, поэтому процент — скидка к курсу USD.
+  // Гифт-карты: скидка от номинала. 15% → платим 0.85 USDT за $1, карта $10 = 8.5 USDT.
+  fee_gift: {
+    label: 'скидку на Google Gift Card в % от номинала (0–50, например 15 → карта $10 = 8.5 USDT)',
+    num: true,
+    key: 'giftPercent',
+    discount: true,
+  },
+  rate_gift: { label: 'курс Google Gift Card в USDT за $1 номинала (например 0.85)', num: true, key: 'rateGOOGLEUSD' },
   min: { label: 'минимальную сумму обмена (₽)', num: true, key: 'minRub' },
   max: { label: 'максимальную сумму обмена (₽)', num: true, key: 'maxRub' },
   ref: { label: 'реферальный процент (например 1)', num: true, key: 'refPercent' },
@@ -490,15 +590,20 @@ async function handleAdminText(ctx) {
     if (field) {
       if (field.num) {
         const n = parseNum(text);
-        if (f.type === 'set:fee') {
-          if (!isFinite(n) || n < 0 || n > 50) return ctx.reply('Комиссия — число от 0 до 50. Пример: 2');
+        if (f.type.startsWith('set:fee')) {
+          if (!isFinite(n) || n < 0 || n > 50) {
+            return ctx.reply(field.discount
+              ? 'Скидка на гифт-карты — число от 0 до 50 %. Пример: 15 (карта $10 = 8.5 USDT)'
+              : 'Комиссия — число от 0 до 50. Пример: 2');
+          }
         } else if (!isFinite(n) || n <= 0) {
           return ctx.reply('Нужно положительное число.');
         }
         store.mutate((db) => {
           db.settings[field.key || f.type.slice(4)] = n;
         });
-        if (f.type === 'set:fee') rates.recomputeWithFee();
+        // Комиссии пересчитывают итоговые курсы; ручные курсы применяются как есть.
+        if (f.type.startsWith('set:fee')) rates.recomputeWithFee();
       } else {
         store.mutate((db) => {
           db.settings[field.key || f.type.slice(4)] = text.slice(0, 500);
@@ -567,7 +672,7 @@ function register() {
     if (!isAdmin(ctx)) {
       const url = store.get().settings.publicUrl;
       if (url) {
-        return ctx.reply('🌌 VEGA — обмен BTC и LTC', {
+        return ctx.reply('🌌 VEGA — обмен BTC, LTC и USDT (TRC20/ERC20)', {
           reply_markup: new InlineKeyboard().webApp('Открыть обменник', url),
         });
       }
@@ -606,6 +711,17 @@ function register() {
       return supportReplyPrompt(ctx, userId);
     }
 
+    if (d.startsWith('s:dir_')) {
+      const key = d.slice(6);
+      if (!currencies.get(key)) return;
+      store.mutate((db) => {
+        db.settings.enabled = db.settings.enabled || {};
+        db.settings.enabled[key] = !currencies.isEnabled(db.settings, key);
+      });
+      const st = currencies.isEnabled(store.get().settings, key);
+      await ctx.answerCallbackQuery({ text: `${key}: ${st ? 'включено' : 'выключено'}` }).catch(() => {});
+      return settingsMenu(ctx, true);
+    }
     if (d === 's:online') {
       store.mutate((db) => {
         db.settings.online = !db.settings.online;
@@ -654,6 +770,8 @@ function register() {
         return txPrompt(ctx, o);
       }
       const allowed = { req: ['new'], quote: ['new'], amt: ['details'], reject: ['new', 'details'], unpaid: ['paid'], confirm: ['details', 'paid'] };
+      // Гифт-карту подтверждают после «Я оплатил»: реквизиты клиенту не нужны.
+      if (isGift(o) && act === 'confirm' && o.status === 'paid') allowed.confirm = ['new', 'details', 'paid'];
       if (!allowed[act]?.includes(o.status)) {
         return ctx.reply('Действие недоступно: статус заявки уже изменился. Откройте заявку заново.', { reply_markup: homeKb() });
       }
@@ -674,7 +792,12 @@ function register() {
         const upd = store.updateOrder(id, { status: 'completed' });
         await sendOrUpdateOrderAdmin(upd);
         await ctx.reply(
-          `📨 <b>Заявка #${id} завершена.</b>\nОтправьте клиенту вручную:\n🪙 <b>${fmtCrypto(upd.crypto, upd.currency)}</b>\n👛 <code>${esc(upd.wallet)}</code>\n\n💡 Теперь вы можете опционально отправить ссылку на блокчейн-транзакцию — нажмите кнопку ниже.`,
+          `📨 <b>Заявка #${id} завершена.</b>\n` +
+          (isGift(upd)
+            ? `🎁 Карта Google на $${giftUnits(upd)} проверена.\n` +
+              `Отправьте клиенту <b>${payoutText(upd)}</b> на кошелёк:\n👛 <code>${esc(upd.wallet)}</code>\n\n`
+            : `Отправьте клиенту вручную:\n🪙 <b>${cryptoText(upd)}</b> (${esc(dirShort(upd))})\n👛 <code>${esc(upd.wallet)}</code>\n\n`) +
+          `💡 Теперь вы можете опционально отправить ссылку на блокчейн-транзакцию — нажмите кнопку ниже.`,
           { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('🔗 Добавить ссылку на блокчейн', `o:${id}:tx`) }
         );
         return;

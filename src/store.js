@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const currencies = require('./currencies');
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
@@ -12,14 +13,23 @@ const defaults = () => ({
     rateLTC: 9400, // ₽ за 1 LTC (итоговый, с комиссией)
     baseRateBTC: null, // официальный курс BTC без комиссии (авто)
     baseRateLTC: null, // официальный курс LTC без комиссии (авто)
-    feePercent: 2, // комиссия обменника, % поверх официального курса
+    baseRateUSDT: null, // официальный курс USDT → ₽ (для TRC20 и ERC20)
+    feePercent: 2, // комиссия обменника по крипте, % поверх официального курса
+    feePercentUSDTTRC20: 4, // комиссия по USDT TRC20 (сеть дешевле, но ликвидность иная)
+    feePercentUSDTERC20: 5, // комиссия по USDT ERC20 (дорогие комиссии сети)
+    rateUSDTTRC20: 100, // стартовые итоговые курсы для USDT (₽ за 1 USDT)
+    rateUSDTERC20: 101,
+    // Google Gift Card: скидка от номинала и фиксированный курс USDT за $1 номинала.
+    giftPercent: 15, // скидка 15% → $10 карта даёт 8.5 USDT
+    rateGOOGLEUSD: 0.85, // курс: 0.85 USDT за $1 номинала = (100 − giftPercent) / 100
+    enabled: { BTC: true, LTC: true, USDT_TRC20: true, USDT_ERC20: true, GOOGLE_USD: true },
     rateUpdatedAt: null,
     rateSource: 'manual',
     minRub: 3000,
     maxRub: 300000,
     online: true,
     announcement:
-      '🚀 VEGA официально начинает работу! Принимаем заявки на обмен BTC и LTC. Минимальная сумма обмена — от 3 000 ₽.',
+      '🚀 VEGA официально начинает работу! Принимаем заявки на обмен BTC, LTC и USDT (TRC20/ERC20). Минимальная сумма обмена — от 3 000 ₽.',
     refPercent: 1,
     operator: '@VEGA_obmen',
     channel: 'https://t.me/VEGA_Official_65',
@@ -46,6 +56,13 @@ function load() {
       db.settings = Object.assign(defaults().settings, raw.settings || {});
       // Миграция старых баз
       if (!Array.isArray(db.support)) db.support = [];
+      if (!db.settings.enabled || typeof db.settings.enabled !== 'object') {
+        db.settings.enabled = defaults().settings.enabled;
+      } else {
+        for (const [key, on] of Object.entries(defaults().settings.enabled)) {
+          if (db.settings.enabled[key] === undefined) db.settings.enabled[key] = on;
+        }
+      }
       if (!Number.isFinite(db.supportSeq)) db.supportSeq = (db.support?.length || 0) + 1;
       for (const o of db.orders || []) {
         if (o.txUrl === undefined) o.txUrl = null;
@@ -89,6 +106,7 @@ function publicSettings() {
   return {
     rateBTC: s.rateBTC,
     rateLTC: s.rateLTC,
+    rates: currencies.publicRates(s),
     rateUpdatedAt: s.rateUpdatedAt,
     minRub: s.minRub,
     maxRub: s.maxRub,
@@ -157,9 +175,16 @@ function createOrder(o) {
       userUsername: o.userUsername || null,
       rub: o.rub,
       currency: o.currency,
-      wallet: o.wallet,
+      network: o.network || null,
+      direction: o.direction || 'buy', // 'buy' (₽ → крипта) | 'sell' (гифт-карта → USDT)
+      units: o.units ?? null, // номинал подарочной карты, $ (для kind: 'gift')
+      giftCode: o.giftCode || null, // код карты (виден только клиенту и оператору)
+      receiptName: o.receiptName || null, // скриншот карты из чата
+      wallet: o.wallet || '',
       rate: o.rate,
       crypto: o.crypto,
+      expiresAt: o.expiresAt ?? null, // срок на сделку (гифт-карты — 1 час)
+      paidAt: null, // когда клиент нажал «Я оплатил»
       status: 'new',
       requisites: null,
       payRub: null,
@@ -177,6 +202,16 @@ function createOrder(o) {
 }
 
 const getOrder = (id) => db.orders.find((o) => o.id === Number(id)) || null;
+
+// Заявка с истёкшим сроком переводится в «отменена» и больше не принимает действий.
+// Отметка «Я оплатил» фиксирует сделку: дальше срок не действует, оператор проверяет вручную.
+const EXPIRED = 'Срок на сделку истёк';
+function expireIfNeeded(order) {
+  if (!order || !order.expiresAt) return order;
+  if (['completed', 'rejected', 'cancelled', 'paid'].includes(order.status)) return order;
+  if (Date.now() < Number(order.expiresAt)) return order;
+  return updateOrder(order.id, { status: 'cancelled', cancelReason: EXPIRED });
+}
 
 // Чек не конфликтует с вводом оператора, поэтому версию заявки не трогаем.
 function setReceipt(id, receipt) {
@@ -199,9 +234,13 @@ function updateOrder(id, patch) {
 }
 
 const userOrders = (userId) =>
-  db.orders.filter((o) => o.userId === String(userId)).sort((a, b) => b.createdAt - a.createdAt);
+  db.orders
+    .filter((o) => o.userId === String(userId))
+    .map(expireIfNeeded)
+    .sort((a, b) => b.createdAt - a.createdAt);
 
-const activeOrders = () => db.orders.filter((o) => ['new', 'details', 'paid'].includes(o.status));
+const activeOrders = () =>
+  db.orders.filter((o) => ['new', 'details', 'paid'].includes(o.status)).map(expireIfNeeded).filter(Boolean);
 
 function stats() {
   const by = (s) => db.orders.filter((o) => o.status === s);
@@ -272,6 +311,8 @@ module.exports = {
   getUser,
   createOrder,
   getOrder,
+  expireIfNeeded,
+  EXPIRED,
   updateOrder,
   setReceipt,
   userOrders,

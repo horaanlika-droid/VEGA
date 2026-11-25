@@ -4,7 +4,7 @@ const { startWeb } = require('./src/web');
 const { startBot } = require('./src/bot');
 const { startRates } = require('./src/rates');
 
-console.log('🌌 VEGA | Official — BTC & LTC Exchange');
+console.log('🌌 VEGA | Official — BTC · LTC · USDT (TRC20/ERC20)');
 console.log(
   `[VEGA] HTTP ${config.host}:${config.port} ← ${config.portSource}` +
     (process.env.SERVER_PORT ? ` SERVER_PORT=${process.env.SERVER_PORT}` : '') +

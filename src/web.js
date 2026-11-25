@@ -4,12 +4,22 @@ const config = require('./config');
 const store = require('./store');
 const bus = require('./bus');
 const receipts = require('./receipts');
+const currencies = require('./currencies');
 const { validateInitData, parseUser } = require('./validate');
 
 const clientOrder = (o) => ({
   id: o.id,
+  direction: o.direction || 'buy',
   rub: o.rub,
   currency: o.currency,
+  network: o.network || null,
+  currencyLabel: currencies.label(o.currency, o.network),
+  units: o.units ?? null,
+  giftCode: o.giftCode || null,
+  receiptName: o.receiptName || null,
+  expiresAt: o.expiresAt ?? null,
+  paidAt: o.paidAt || null,
+  cancelReason: o.cancelReason || null,
   wallet: o.wallet,
   crypto: o.crypto,
   rate: o.rate,
@@ -29,6 +39,19 @@ const clientUser = (u) => ({
   referrer: u.referrer,
   referredCount: u.referredCount || 0,
 });
+
+// Сколько USDT получит клиент, отдавший карту на units долларов.
+// Курс карты — доля номинала в USDT (при 15%: $10 → 8.5 USDT), от сети не зависит.
+function giftPayout(settings, units, network) {
+  const cardRate = currencies.rateOf(settings, 'GOOGLE_USD', null);
+  if (!(cardRate > 0)) return null;
+  if (!currencies.isEnabled(settings, network === 'ERC20' ? 'USDT_ERC20' : 'USDT_TRC20')) return null;
+  const dec = currencies.payoutDecimals('GOOGLE_USD');
+  const mul = 10 ** dec;
+  const crypto = Math.floor((Number(units) || 0) * cardRate * mul + 1e-6) / mul;
+  const usdtRate = currencies.rateOf(settings, 'USDT', network);
+  return { crypto, rate: cardRate, cardRate, usdtRate };
+}
 
 function startWeb() {
   const app = express();
@@ -118,11 +141,66 @@ function startWeb() {
     const a = needAuth(req, res);
     if (!a) return;
     const s = store.get().settings;
-    const currency = req.body.currency;
+    const currency = String(req.body.currency || '').toUpperCase();
+    const network = req.body.network ? String(req.body.network).toUpperCase() : null;
+    const pair = currencies.find(currency, network);
     const wallet = String(req.body.wallet || '').trim();
     if (!s.online) return res.status(403).json({ error: 'Обмен временно недоступен' });
-    if (!['BTC', 'LTC'].includes(currency)) return res.status(400).json({ error: 'Неизвестная валюта' });
-    const rate = currency === 'BTC' ? s.rateBTC : s.rateLTC;
+    if (!pair) return res.status(400).json({ error: 'Неизвестная валюта' });
+    if (!currencies.isEnabled(s, pair.key)) {
+      return res.status(400).json({ error: `Обмен ${pair.label} временно не проводится — выберите другое направление.` });
+    }
+    const user = store.touchUser(a.user, req.body.startParam || '');
+
+    /* ---------- гифт-карта → USDT ---------- */
+    if (pair.kind === 'gift') {
+      const units = Number(req.body.units ?? req.body.cryptoAmount);
+      const unitsError = currencies.validateUnits(pair.currency, pair.network, units);
+      if (unitsError) return res.status(400).json({ error: unitsError });
+      const giftCode = String(req.body.giftCode || '').trim();
+      if (giftCode.length < 8 || giftCode.length > 200 || /\s{2,}/.test(giftCode)) {
+        return res.status(400).json({ error: 'Введите код подарочной карты (8–200 символов).' });
+      }
+      // Сеть выплаты определяем по адресу: T… → TRC20, 0x… → ERC20.
+      const giftNetwork = currencies.networkByWallet(wallet);
+      if (!giftNetwork) {
+        return res.status(400).json({ error: pair.walletError });
+      }
+      const payout = giftPayout(s, units, giftNetwork);
+      if (!payout) {
+        return res.status(400).json({ error: `Выплата USDT в сети ${giftNetwork} недоступна — выберите другой адрес.` });
+      }
+      if (!(payout.crypto > 0)) {
+        return res.status(400).json({ error: 'Слишком маленькая сумма к выплате — увеличьте номинал карты.' });
+      }
+      const ttlMinutes = Number(pair.ttlMinutes) || 60;
+      const order = store.createOrder({
+        userId: String(user.id),
+        userName: user.name,
+        userUsername: user.username,
+        direction: 'sell',
+        expiresAt: Date.now() + ttlMinutes * 60 * 1000, // час на сделку
+        rub: Math.round(payout.crypto * (payout.usdtRate || 0)), // справочная сумма в ₽
+        units,
+        currency: pair.currency,
+        network: giftNetwork,
+        giftCode,
+        wallet,
+        rate: payout.rate,
+        crypto: payout.crypto,
+        referrer: user.referrer,
+      });
+      bus.emit('order_event', { order, type: 'new' });
+      return res.json({ order: clientOrder(order) });
+    }
+
+    /* ---------- покупка крипты за рубли ---------- */
+    const rate = currencies.rateOf(s, pair.currency, pair.network);
+    if (!rate) return res.status(400).json({ error: `Курс ${pair.label} ещё не настроен — выберите другое направление.` });
+    const walletError = currencies.validateWallet(pair.currency, pair.network, wallet);
+    if (walletError) return res.status(400).json({ error: walletError });
+    // Округляем выплату вниз до точности сети, чтобы не обещать больше, чем можем отправить.
+    const floorCrypto = (v) => Math.floor(v * 10 ** pair.decimals + 1e-6) / 10 ** pair.decimals;
     let rub = Number(req.body.rub);
     let crypto = null;
     const hasRub = req.body.rub !== undefined && req.body.rub !== null && req.body.rub !== '';
@@ -133,22 +211,22 @@ function startWeb() {
       if (!isFinite(amount) || amount <= 0) return res.status(400).json({ error: `Минимальная сумма — ${s.minRub} ₽` });
       rub = Math.ceil(amount * rate - 1e-6);
       if (!isFinite(rub)) return res.status(400).json({ error: `Максимальная сумма — ${s.maxRub} ₽` });
-      crypto = amount;
+      crypto = floorCrypto(amount);
+      if (!(crypto > 0)) return res.status(400).json({ error: `Минимальная сумма — ${s.minRub} ₽` });
     }
     if (rub < s.minRub) return res.status(400).json({ error: `Минимальная сумма — ${s.minRub} ₽` });
     if (rub > s.maxRub) return res.status(400).json({ error: `Максимальная сумма — ${s.maxRub} ₽` });
-    if (wallet.length < 26 || wallet.length > 128 || /\s/.test(wallet))
-      return res.status(400).json({ error: 'Проверьте адрес кошелька' });
-    const user = store.touchUser(a.user, req.body.startParam || '');
     const order = store.createOrder({
       userId: String(user.id),
       userName: user.name,
       userUsername: user.username,
+      direction: 'buy',
       rub,
-      currency,
+      currency: pair.currency,
+      network: pair.network,
       wallet,
       rate,
-      crypto: crypto ?? rub / rate,
+      crypto: crypto ?? floorCrypto(rub / rate),
       referrer: user.referrer,
     });
     bus.emit('order_event', { order, type: 'new' });
@@ -158,9 +236,9 @@ function startWeb() {
   app.get('/api/order/:id', (req, res) => {
     const a = needAuth(req, res);
     if (!a) return;
-    const o = store.getOrder(req.params.id);
-    if (!o || o.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
-    res.json({ order: clientOrder(o) });
+    const found = store.getOrder(req.params.id);
+    if (!found || found.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
+    res.json({ order: clientOrder(store.expireIfNeeded(found) || found) });
   });
 
   app.post('/api/order/:id/receipt', (req, res) => {
@@ -216,8 +294,15 @@ function startWeb() {
   app.post('/api/order/:id/paid', (req, res) => {
     const a = needAuth(req, res);
     if (!a) return;
-    const o = store.getOrder(req.params.id);
-    if (!o || o.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
+    const found = store.getOrder(req.params.id);
+    if (!found || found.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
+    const o = store.expireIfNeeded(found);
+    // Гифт-карта: клиент прислал код и подтверждает готовность сделки — начинается проверка.
+    if (o.direction === 'sell' && o.status === 'new') {
+      const upd = store.updateOrder(o.id, { status: 'paid', paidAt: Date.now() });
+      bus.emit('order_event', { order: upd, type: 'paid' });
+      return res.json({ order: clientOrder(upd) });
+    }
     if (o.status === 'details') {
       if (!o.receipt) {
         return res.status(400).json({ error: 'Сначала прикрепите чек в формате PDF' });
@@ -232,8 +317,12 @@ function startWeb() {
   app.post('/api/order/:id/cancel', (req, res) => {
     const a = needAuth(req, res);
     if (!a) return;
-    const o = store.getOrder(req.params.id);
-    if (!o || o.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
+    const found = store.getOrder(req.params.id);
+    if (!found || found.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
+    const o = store.expireIfNeeded(found);
+    if (o.status === 'cancelled' && o.cancelReason === store.EXPIRED) {
+      return res.status(400).json({ error: `${store.EXPIRED} — создайте новую заявку.` });
+    }
     if (['new', 'details'].includes(o.status)) {
       const upd = store.updateOrder(o.id, { status: 'cancelled' });
       bus.emit('order_event', { order: upd, type: 'cancelled' });

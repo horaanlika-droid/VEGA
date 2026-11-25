@@ -1,4 +1,4 @@
-/* VEGA | Official — клиентское Web App (BTC & LTC обмен + поддержка + tx) */
+/* VEGA | Official — клиентское Web App (BTC / LTC / USDT TRC20 / USDT ERC20 + поддержка + tx) */
 (() => {
   'use strict';
 
@@ -30,7 +30,90 @@
 
   const $ = (s) => document.querySelector(s);
   const TERMINAL = ['completed', 'rejected', 'cancelled'];
-  const S = { settings: null, me: null, orders: [], order: null, tab: 'exchange', currency: 'BTC', isDemo: false, calcFrom: 'rub', support: [] };
+  // dir — выбранное направление (ключ из /api/settings → rates[]).
+  const S = { settings: null, me: null, orders: [], order: null, tab: 'exchange', dir: 'BTC', isDemo: false, calcFrom: 'rub', support: [], mode: 'buy' };
+
+  // Резервный реестр направлений: нужен, если сервер старой версии не прислал rates.
+  const FALLBACK_DIRS = [
+    { key: 'BTC', currency: 'BTC', network: null, label: 'BTC', symbol: '₿', coin: 'btc', decimals: 8, display: null, walletHint: 'Адрес BTC-кошелька (bc1… / 1… / 3…)', walletPattern: '^(bc1[a-zA-HJ-NP-Z0-9]{25,62}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$', walletError: 'Проверьте адрес BTC-кошелька — он выглядит некорректно.', rate: null, enabled: true },
+    { key: 'LTC', currency: 'LTC', network: null, label: 'LTC', symbol: 'Ł', coin: 'ltc', decimals: 8, display: null, walletHint: 'Адрес LTC-кошелька (ltc1… / L… / M…)', walletPattern: '^(ltc1[a-zA-HJ-NP-Z0-9]{25,62}|[LM3][a-km-zA-HJ-NP-Z1-9]{25,34})$', walletError: 'Проверьте адрес LTC-кошелька — он выглядит некорректно.', rate: null, enabled: true },
+    { key: 'USDT_TRC20', currency: 'USDT', network: 'TRC20', label: 'USDT TRC20', symbol: '₮', coin: 'usdt', decimals: 6, display: 2, walletHint: 'Адрес USDT TRC20 (T…, 34 символа)', walletPattern: '^T[1-9A-HJ-NP-Za-km-z]{33}$', walletError: 'Это не похоже на адрес USDT в сети TRC20 — он начинается с T и содержит 34 символа.', networkHint: 'сеть TRON · низкая комиссия, зачисление 1–3 мин', rate: null, enabled: true },
+    { key: 'USDT_ERC20', currency: 'USDT', network: 'ERC20', label: 'USDT ERC20', symbol: '₮', coin: 'usdt', decimals: 6, display: 2, walletHint: 'Адрес USDT ERC20 (0x + 40 символов)', walletPattern: '^0x[0-9a-fA-F]{40}$', walletError: 'Это не похоже на адрес USDT в сети ERC20 — нужен 0x и 40 hex-символов.', networkHint: 'сеть Ethereum · высокая комиссия сети, зачисление 5–15 мин', rate: null, enabled: true },
+    { key: 'GOOGLE_USD', direction: 'sell', currency: 'GOOGLE_USD', network: null, kind: 'gift', label: 'Google Gift Card', symbol: '🎁', coin: 'google', decimals: 0, display: 0, unit: 'USD', step: 10, minUnits: 10, walletHint: 'Адрес USDT-кошелька (T… или 0x…)', walletPattern: '^(T[1-9A-HJ-NP-Za-km-z]{33}|0x[0-9a-fA-F]{40})$', walletError: 'Укажите адрес USDT: TRC20 начинается с T (34 символа), ERC20 — 0x и 40 hex-символов.', rate: null, enabled: true },
+  ];
+
+  // Все направления с итоговым курсом; старый формат settings.rateBTC/LTC тоже поддерживается.
+  function dirs() {
+    const s = S.settings;
+    if (!s) return [];
+    if (Array.isArray(s.rates) && s.rates.length) return s.rates;
+    return FALLBACK_DIRS.map((d) => ({
+      ...d,
+      rate: d.key === 'BTC' ? s.rateBTC : d.key === 'LTC' ? s.rateLTC : null,
+    }));
+  }
+  const isGiftDir = (d) => !!d && (d.kind === 'gift' || d.direction === 'sell');
+  const available = () => dirs().filter((d) => d.enabled !== false && Number(d.rate) > 0);
+  // Направления покупки (₽ → крипта) и продажи (гифт-карта → USDT).
+  const buyDirs = () => available().filter((d) => !isGiftDir(d));
+  const sellDirs = () => available().filter(isGiftDir);
+  const currentSellDir = () => sellDirs()[0] || dirs().find(isGiftDir) || FALLBACK_DIRS[4];
+
+  // Сеть выплаты USDT определяем по адресу клиента.
+  function usdtNetworkOf(address) {
+    const a = String(address || '').trim();
+    if (/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(a)) return 'TRC20';
+    if (/^0x[0-9a-fA-F]{40}$/.test(a)) return 'ERC20';
+    return null;
+  }
+  // Курс USDT своей сети — по нему считаем, сколько USDT получит клиент за карту.
+  function usdtRateFor(network) {
+    const key = network === 'ERC20' ? 'USDT_ERC20' : 'USDT_TRC20';
+    const d = dirs().find((x) => x.key === key);
+    return d && Number(d.rate) > 0 ? Number(d.rate) : null;
+  }
+  // Сколько USDT даём за карту номиналом units $: курс карты (USDT за $1) не зависит от сети.
+  function giftPayout(units, network) {
+    const dir = isGiftDir(currentDir()) ? currentDir() : currentSellDir();
+    const giftRate = Number(dir && dir.rate) || 0;
+    if (!(giftRate > 0)) return null;
+    // Нужно, чтобы выплата в этой сети была включена и настроена.
+    if (!(usdtRateFor(network) > 0)) return null;
+    return floorTo((Number(units) || 0) * giftRate, 2);
+  }
+  function currentDir() {
+    const all = dirs();
+    return all.find((d) => d.key === S.dir) || available()[0] || all[0] || FALLBACK_DIRS[0];
+  }
+  // При смене настроек оператором выбранное направление могло исчезнуть — берём доступное.
+  function selectDir(key) {
+    const all = dirs();
+    const want = all.find((d) => d.key === key);
+    const dir = want && want.enabled !== false && Number(want.rate) > 0 ? want : available()[0] || want || all[0];
+    S.dir = dir ? dir.key : key;
+    return S.dir;
+  }
+  // Точность хранения/округления (USDT — 6, BTC/LTC — 8).
+  function decimalsOf(dir) {
+    return Number.isFinite(Number(dir.decimals)) ? Number(dir.decimals) : 8;
+  }
+  // Точность для показа клиенту (USDT — 2 знака, BTC/LTC — 8).
+  function displayOf(dir) {
+    const d = dir.display;
+    return Number.isFinite(Number(d)) && d !== null && d !== undefined ? Number(d) : decimalsOf(dir);
+  }
+  function dirLabel(o) {
+    const d = dirs().find((x) => x.currency === o.currency && (x.network || null) === (o.network || null));
+    if (d) return d.label;
+    return o.currencyLabel || [o.currency, o.network].filter(Boolean).join(' ');
+  }
+  const floorTo = (v, dec) => Math.floor(Number(v) * 10 ** dec + 1e-6) / 10 ** dec;
+  // Параметры направления по заявке (в заявке хранятся currency + network).
+  function dirOfOrder(o) {
+    const d = dirs().find((x) => x.currency === o.currency && (x.network || null) === (o.network || null));
+    return d || FALLBACK_DIRS.find((x) => x.currency === o.currency && (x.network || null) === (o.network || null)) || { coin: String(o.currency || '').toLowerCase(), symbol: o.currency === 'BTC' ? '₿' : o.currency === 'LTC' ? 'Ł' : '₮', decimals: 8, display: o.currency === 'USDT' ? 2 : 8 };
+  }
+  const currenciesDecimals = (o) => displayOf(dirOfOrder(o));
 
   const STATUS = {
     new: { label: 'Подбор реквизитов', color: '#ffb648' },
@@ -43,17 +126,28 @@
 
   const esc = (s) => String(s ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', "'": '&#39;' }[c]));
   const fmtRub = (n) => Math.round(Number(n) || 0).toLocaleString('ru-RU') + ' ₽';
-  const fmtCrypto = (v, cur) => {
+  // dec — точность из направления (USDT — 2 знака, BTC/LTC — 8); без неё точность по величине.
+  const fmtCrypto = (v, cur, dec) => {
     const n = Number(v) || 0;
-    const dec = n >= 1000 ? 2 : n >= 1 ? 4 : 6;
-    return n.toFixed(dec) + ' ' + cur;
+    const d = Number.isFinite(Number(dec)) && dec !== null ? Number(dec) : n >= 1000 ? 2 : n >= 1 ? 4 : 6;
+    const fixed = n.toFixed(d);
+    const trimmed = fixed.includes('.') ? fixed.replace(/\.?0+$/, '') : fixed;
+    return (trimmed || '0') + ' ' + cur;
   };
-  const cryptoFromRub = (rub, rate) => Math.floor(((Number(rub) || 0) / rate) * 1e8 + 1e-6) / 1e8;
+  const cryptoFromRub = (rub, rate, dec = 8) => floorTo((Number(rub) || 0) / rate, dec);
   const rubFromCrypto = (crypto, rate) => Math.ceil(Number(crypto) * rate - 1e-6);
-  const fmtTrim = (v) => {
+  // Обрезает «хвост» нулей, но не больше precision знаков (USDT — 2).
+  const fmtTrim = (v, precision = 8) => {
     const n = Number(v) || 0;
     if (!(n > 0)) return '';
-    return n.toFixed(8).replace(/\.?0+$/, '');
+    const d = Math.min(Math.max(Number(precision) || 8, 0), 8);
+    return n.toFixed(d).replace(/\.?0+$/, '');
+  };
+  const fmtRate = (rate) => {
+    const n = Number(rate) || 0;
+    if (!(n > 0)) return '—';
+    const text = n.toFixed(2).replace(/\.?0+$/, '');
+    return text.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' ₽';
   };
   const fmtDate = (ts) => {
     const d = new Date(ts);
@@ -172,43 +266,154 @@
     );
   }
 
+  // Кнопки направлений покупки — общие для первой отрисовки и живого обновления сегмента.
+  function segHtml() {
+    const dir = currentDir();
+    const all = available();
+    return (all.length ? all : [dir])
+      .map(
+        (d) => `<button data-c="${esc(d.key)}" class="${d.key === dir.key ? 'on' : ''}">
+          <span class="sc-sym ${esc(d.coin)}">${esc(d.symbol)}</span>${esc(d.label)}
+        </button>`
+      )
+      .join('');
+  }
+
+  // Оператор включил/выключил направление — сегмент обновляется без перезагрузки.
+  function syncSegment() {
+    const seg = $('#segCur');
+    if (!seg) return;
+    const keys = available().map((d) => d.key).join(',');
+    if (seg.dataset.keys === keys) return;
+    seg.dataset.keys = keys;
+    seg.innerHTML = segHtml();
+    seg.classList.toggle('seg-4', available().length > 2);
+    seg.querySelectorAll('button').forEach((b) =>
+      b.addEventListener('click', () => {
+        S.dir = b.dataset.c;
+        haptic('light');
+        seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+        const d = currentDir();
+        if ($('#inWallet')) $('#inWallet').placeholder = d.walletHint;
+        renderFormMeta();
+      })
+    );
+  }
+
   function renderExchange() {
+    const dir = currentDir();
+    const all = available();
+    const segButtons = segHtml();
+    const sell = currentSellDir();
+    const giftOn = sellDirs().length > 0;
+    const step = Number(sell && sell.step) || 10;
+    const minUnits = Number(sell && sell.minUnits) || step;
     $('#view-exchange').innerHTML = `
       <div id="exForm" class="${S.order ? 'hidden' : ''}">
-        <div class="card">
-          <div class="card-title">Направление обмена</div>
-          <div class="f-label"><span>Вы отдаёте</span><span id="mmLabel"></span></div>
-          <div class="f-box"><div class="coin-ic rub">₽</div><input id="inRub" type="number" inputmode="decimal" placeholder="5 000" min="0" step="any"></div>
-          <div class="f-sep"><div class="arr">${ICONS.down}</div></div>
-          <div class="f-label"><span>Вы получаете</span><span id="cryptoLimits"></span></div>
-          <div class="seg" id="segCur">
-            <button data-c="BTC" class="${S.currency === 'BTC' ? 'on' : ''}">₿&nbsp;BTC</button>
-            <button data-c="LTC" class="${S.currency === 'LTC' ? 'on' : ''}">Ł&nbsp;LTC</button>
+        <div id="buyForm">
+          <div class="card">
+            <div class="card-title">Направление обмена</div>
+            <div class="f-label"><span>Вы отдаёте</span><span id="mmLabel"></span></div>
+            <div class="f-box"><div class="coin-ic rub">₽</div><input id="inRub" type="number" inputmode="decimal" placeholder="5 000" min="0" step="any"></div>
+            <div class="f-sep"><div class="arr">${ICONS.down}</div></div>
+            <div class="f-label"><span>Вы получаете</span><span id="cryptoLimits"></span></div>
+            <div class="seg seg-${Math.min(all.length || 1, 4)}" id="segCur">${segButtons}</div>
+            <div id="netPick"></div>
+            <div class="f-box" style="margin-top:10px"><div class="coin-ic" id="getIc">${esc(dir.symbol)}</div><input id="inCrypto" type="number" inputmode="decimal" placeholder="0.0005" min="0" step="any"></div>
+            <div class="f-hint">Введите сумму в любом поле — второе посчитается автоматически</div>
+            <div class="f-meta" id="fMeta"></div>
           </div>
-          <div class="f-box" style="margin-top:10px"><div class="coin-ic" id="getIc">₿</div><input id="inCrypto" type="number" inputmode="decimal" placeholder="0.0005" min="0" step="any"></div>
-          <div class="f-hint">Введите сумму в любом поле — второе посчитается автоматически</div>
-          <div class="f-meta" id="fMeta"></div>
+          <div class="card">
+            <div class="card-title">Кошелёк получателя</div>
+            <div class="f-box"><div class="coin-ic" id="walIc">${esc(dir.symbol)}</div><input id="inWallet" placeholder="${esc(dir.walletHint)}" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+            <div class="f-hint" id="walHint"></div>
+            <div class="f-err" id="fErr"></div>
+          </div>
+          <button class="btn btn-primary" style="margin-top:14px" id="btnGo">${ICONS.bolt}<span>Найти реквизиты</span></button>
         </div>
-        <div class="card">
-          <div class="card-title">Кошелёк получателя</div>
-          <div class="f-box"><div class="coin-ic" id="walIc">₿</div><input id="inWallet" placeholder="Адрес BTC-кошелька" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
-          <div class="f-err" id="fErr"></div>
+        <div id="giftForm" class="hidden">
+          <div class="card">
+            <div class="card-title">Google Gift Card</div>
+            <div class="f-label"><span>Номинал карты</span><span id="giftRule"></span></div>
+            <div class="seg gift-nom" id="segNom"></div>
+            <div class="f-box" style="margin-top:10px"><div class="coin-ic google">🎁</div><input id="inUnits" type="number" inputmode="numeric" placeholder="10" min="${minUnits}" step="${step}" value="10"></div>
+            <div class="f-hint">Введите номинал карты: от $${minUnits}, кратно $${step}</div>
+            <div class="f-sep"><div class="arr">${ICONS.down}</div></div>
+            <div class="f-label"><span>Вы получаете</span><span id="giftLimits"></span></div>
+            <div class="f-box"><div class="coin-ic usdt">₮</div><input id="outUsdt" type="text" readonly placeholder="—"></div>
+            <div class="f-meta" id="giftMeta"></div>
+            <div class="info-note" style="margin-top:10px">⏱ На сделку даётся <b>1 час</b>: пришлите код, нажмите «Я оплатил» — оператор проверит карту и выплатит USDT.</div>
+          </div>
+          <div class="card">
+            <div class="card-title">Где взять карту</div>
+            <div class="info-note" id="giftInfo">Карту можно купить на любом маркетплейсе — Яндекс Маркет, Ozon, Wildberries и т. д. Выбирайте карту именно в <b>USD</b> (долларах): карты в рублях и других валютах не принимаются.</div>
+            <div class="info-warn">⚠️ Проверьте валюту карты: нужен номинал в <b>USD ($)</b>.</div>
+          </div>
+          <div class="card">
+            <div class="card-title">Код карты</div>
+            <div class="f-box"><div class="coin-ic google">🎁</div><input id="inGiftCode" placeholder="Например: XXXX-XXXX-XXXX-XXXX" autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+            <div class="f-hint">Код видит только оператор — он проверит карту и выплатит USDT</div>
+            <div class="f-err" id="giftCodeErr"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">Кошелёк для выплаты USDT</div>
+            <div class="f-box"><div class="coin-ic usdt">₮</div><input id="inUsdtWallet" placeholder="T… (TRC20) или 0x… (ERC20)" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+            <div class="f-hint" id="giftNetHint">Сеть определим по адресу: TRC20 начинается с T, ERC20 — с 0x</div>
+            <div class="f-err" id="giftErr"></div>
+          </div>
+          <button class="btn btn-primary" style="margin-top:14px" id="btnSell">${ICONS.bolt}<span>Обменять карту на USDT</span></button>
         </div>
-        <button class="btn btn-primary" style="margin-top:14px" id="btnGo">${ICONS.bolt}<span>Найти реквизиты</span></button>
       </div>
       <div id="exOrder" class="${S.order ? '' : 'hidden'}"></div>
     `;
+
+    $('#segCur').dataset.keys = all.map((d) => d.key).join(',');
     $('#segCur').querySelectorAll('button').forEach((b) =>
       b.addEventListener('click', () => {
-        S.currency = b.dataset.c;
+        S.dir = b.dataset.c;
         haptic('light');
         $('#segCur').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+        const d = currentDir();
+        // Подставляем подсказку кошелька под новую сеть и пересчитываем второе поле.
+        $('#inWallet').placeholder = d.walletHint;
         renderFormMeta();
       })
     );
     $('#inRub').addEventListener('input', () => { S.calcFrom = 'rub'; renderFormMeta(); });
     $('#inCrypto').addEventListener('input', () => { S.calcFrom = 'crypto'; renderFormMeta(); });
     $('#btnGo').addEventListener('click', submitOrder);
+
+    if (giftOn) {
+      $('#segNom').innerHTML = [10, 20, 50, 100]
+        .map((v) => `<button data-v="${v}" class="${v === 10 ? 'on' : ''}">$${v}</button>`)
+        .join('');
+      $('#segNom').querySelectorAll('button').forEach((b) =>
+        b.addEventListener('click', () => {
+          $('#inUnits').value = b.dataset.v;
+          haptic('light');
+          $('#segNom').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+          renderFormMeta();
+        })
+      );
+      const unitsInput = $('#inUnits');
+      unitsInput.addEventListener('input', () => {
+        // Номинал кратен $10: ввод 37 превращаем в 30.
+        const n = Math.floor((Number(unitsInput.value) || 0) / step) * step;
+        $('#segNom').querySelectorAll('button').forEach((x) => x.classList.toggle('on', Number(x.dataset.v) === n));
+        renderFormMeta();
+      });
+      unitsInput.addEventListener('blur', () => {
+        const n = Math.max(minUnits, Math.floor((Number(unitsInput.value) || 0) / step) * step);
+        unitsInput.value = String(n);
+        renderFormMeta();
+      });
+      $('#inUsdtWallet').addEventListener('input', renderFormMeta);
+      $('#inGiftCode').addEventListener('input', () => {
+        const e = $('#giftCodeErr');
+        if (e) e.textContent = '';
+      });
+      $('#btnSell').addEventListener('click', submitGiftOrder);
+    }
     renderFormMeta();
     renderOrderStage();
   }
@@ -216,8 +421,31 @@
   function renderFormMeta() {
     const s = S.settings;
     if (!s) return;
-    const cur = S.currency;
-    const rate = cur === 'BTC' ? s.rateBTC : s.rateLTC;
+    const dir = currentDir();
+    const rate = Number(dir.rate);
+    const dec = displayOf(dir);
+    const all = available();
+    if ($('#segCur')) syncSegment();
+    // Гифт-карта — отдельная форма: номинал в $ → USDT, без полей рублей и курса.
+    const giftMode = isGiftDir(dir);
+    if ($('#buyForm')) $('#buyForm').classList.toggle('hidden', giftMode);
+    if ($('#giftForm')) $('#giftForm').classList.toggle('hidden', !giftMode);
+    if (giftMode) return renderGiftMeta();
+    // Выбранное направление выключили — переключаем сегмент на доступное.
+    if (!rate || dir.enabled === false) {
+      if (all.length) {
+        S.dir = all[0].key;
+        const seg = $('#segCur');
+        if (seg) seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.c === S.dir));
+        return renderFormMeta();
+      }
+      const btn0 = $('#btnGo');
+      if (btn0) {
+        btn0.disabled = true;
+        btn0.querySelector('span').textContent = '⛔ Направления временно недоступны';
+      }
+      return;
+    }
     const inRub = $('#inRub');
     const inCrypto = $('#inCrypto');
     if (inRub && inCrypto) {
@@ -226,21 +454,31 @@
         inRub.value = c > 0 ? String(rubFromCrypto(c, rate)) : '';
       } else {
         const rub = parseFloat(inRub.value);
-        inCrypto.value = rub > 0 ? fmtTrim(cryptoFromRub(rub, rate)) : '';
+        inCrypto.value = rub > 0 ? fmtTrim(cryptoFromRub(rub, rate, dec), dec) : '';
       }
     }
     $('#mmLabel').textContent = `от ${fmtRub(s.minRub)} до ${fmtRub(s.maxRub)}`;
     const cl = $('#cryptoLimits');
-    if (cl) cl.textContent = `≈ ${fmtTrim(s.minRub / rate)}–${fmtTrim(s.maxRub / rate)} ${cur}`;
+    if (cl) cl.textContent = `≈ ${fmtTrim(s.minRub / rate, dec)}–${fmtTrim(s.maxRub / rate, dec)} ${dir.currency}`;
     const ic = $('#getIc');
-    ic.className = 'coin-ic ' + cur.toLowerCase();
-    ic.textContent = cur === 'BTC' ? '₿' : 'Ł';
+    if (ic) { ic.className = 'coin-ic ' + dir.coin; ic.textContent = dir.symbol; }
     const wi = $('#walIc');
-    wi.className = 'coin-ic ' + cur.toLowerCase();
-    wi.textContent = cur === 'BTC' ? '₿' : 'Ł';
-    $('#inWallet').placeholder = cur === 'BTC' ? 'Адрес BTC-кошелька (bc1… / 1… / 3…)' : 'Адрес LTC-кошелька (ltc1… / L… / M…)';
+    if (wi) { wi.className = 'coin-ic ' + dir.coin; wi.textContent = dir.symbol; }
+    const w = $('#inWallet');
+    if (w) w.placeholder = dir.walletHint;
+    const np = $('#netPick');
+    if (np) {
+      np.innerHTML = dir.network && dir.networkHint
+        ? `<div class="net-note"><b>${esc(dir.label)}</b> · ${esc(dir.networkHint)}</div>`
+        : '';
+    }
+    const wh = $('#walHint');
+    if (wh) wh.textContent = dir.network
+      ? `⚠️ Выплата только в сети ${dir.network}. Адрес из другой сети приведёт к потере средств.`
+      : '';
     $('#fMeta').innerHTML = `
-      <div class="row"><span>Курс</span><b>1 ${cur} = ${fmtRub(rate)}</b></div>
+      <div class="row"><span>Курс</span><b>1 ${esc(dir.currency)} = ${fmtRate(rate)}</b></div>
+      ${dir.network ? `<div class="row"><span>Сеть</span><b>${esc(dir.network)}</b></div>` : ''}
       ${s.rateUpdatedAt ? `<div class="row"><span>Курс обновлён</span><b>${fmtDate(s.rateUpdatedAt)}</b></div>` : ''}
       <div class="row"><span>Обработкой занимается</span><b>оператор VEGA</b></div>`;
     const btn = $('#btnGo');
@@ -248,28 +486,132 @@
     btn.querySelector('span').textContent = s.online ? 'Найти реквизиты' : '⛔ Обмен временно недоступен';
   }
 
+  // Гифт-карта: номинал в $ → сколько USDT получим и в какой сети.
+  function renderGiftMeta() {
+    const units = $('#inUnits');
+    if (!units) return;
+    const s = S.settings;
+    const dir = isGiftDir(currentDir()) ? currentDir() : currentSellDir();
+    const step = Number(dir && dir.step) || 10;
+    const minUnits = Number(dir && dir.minUnits) || step;
+    const rate = Number(dir && dir.rate) || 0;
+    const nominal = Math.max(0, Math.floor((Number(units.value) || 0) / step) * step);
+    const wallet = ($('#inUsdtWallet') && $('#inUsdtWallet').value) || '';
+    const network = usdtNetworkOf(wallet);
+    const payout = network ? giftPayout(nominal, network) : giftPayout(nominal, 'TRC20');
+    const out = $('#outUsdt');
+    const amount = (v) => (Math.round(v * 100) / 100).toFixed(2).replace(/\.?0+$/, '');
+    if (out) {
+      // Показываем ровную цену: $10 → 8.5 USDT (без лишних нулей).
+      out.value = nominal && payout
+        ? `${amount(payout)} USDT${network ? ' · ' + network : ''}`
+        : '—';
+    }
+    const rule = $('#giftRule');
+    if (rule) rule.textContent = `от $${minUnits} · кратно $${step}`;
+    const info = $('#giftInfo');
+    if (info && dir && dir.infoNote) info.innerHTML = esc(dir.infoNote).replace(/USD/g, '<b>USD</b>').replace(/Яндекс Маркет/, '<b>Яндекс Маркет</b>');
+    const limits = $('#giftLimits');
+    if (limits) {
+      limits.textContent = rate
+        ? `${rate} USDT за $1 номинала`
+        : 'направление недоступно';
+    }
+    const hint = $('#giftNetHint');
+    if (hint) {
+      const trc = usdtRateFor('TRC20');
+      const erc = usdtRateFor('ERC20');
+      hint.textContent = network
+        ? `Сеть ${network}: выплата ${payout ? amount(payout) : '—'} USDT за $${nominal}`
+        : `Сеть определим по адресу: TRC20 (${trc ? fmtRate(trc) : '—'}) · ERC20 (${erc ? fmtRate(erc) : '—'})`;
+    }
+    const meta = $('#giftMeta');
+    if (meta) {
+      meta.innerHTML = `
+        <div class="row"><span>Номинал карты</span><b>$${nominal}</b></div>
+        <div class="row"><span>Курс</span><b>1 $ = ${rate ? rate + ' USDT' : '—'}</b></div>
+        ${network ? `<div class="row"><span>Сеть выплаты</span><b>${esc(network)}</b></div>` : ''}
+        <div class="row"><span>К выплате</span><b>${payout ? amount(payout) + ' USDT' : '—'}</b></div>`;
+    }
+    const btn = $('#btnSell');
+    if (btn) {
+      btn.disabled = !s.online || !rate;
+      btn.querySelector('span').textContent = s.online ? 'Продать карту' : '⛔ Обмен временно недоступен';
+    }
+  }
+
+  async function submitGiftOrder() {
+    const s = S.settings;
+    const err = $('#giftErr');
+    const codeErr = $('#giftCodeErr');
+    err.textContent = '';
+    codeErr.textContent = '';
+    const dir = isGiftDir(currentDir()) ? currentDir() : currentSellDir();
+    const step = Number(dir && dir.step) || 10;
+    const minUnits = Number(dir && dir.minUnits) || step;
+    const units = Math.floor((Number($('#inUnits').value) || 0) / step) * step;
+    const giftCode = ($('#inGiftCode').value || '').trim();
+    const wallet = ($('#inUsdtWallet').value || '').trim();
+    const network = usdtNetworkOf(wallet);
+    if (!s.online) return (err.textContent = '⛔ Обмен временно недоступен — загляните позже.');
+    if (!(Number(dir.rate) > 0)) return (err.textContent = 'Продажа карт сейчас недоступна.');
+    if (!units || units < minUnits) return (err.textContent = `Минимальный номинал — $${minUnits}, сумма кратна $${step}.`);
+    if (giftCode.length < 8) return (codeErr.textContent = 'Введите полный код карты (не менее 8 символов).');
+    if (!network) return (err.textContent = 'Укажите адрес USDT: TRC20 начинается с T, ERC20 — с 0x (40 hex).');
+    const payout = giftPayout(units, network);
+    if (!(payout > 0)) return (err.textContent = 'Не удалось рассчитать выплату — проверьте адрес и номинал.');
+    const btn = $('#btnSell');
+    btn.disabled = true;
+    haptic('medium');
+    try {
+      const r = await api('/api/orders', {
+        method: 'POST',
+        body: { units, giftCode, wallet, currency: 'GOOGLE_USD', startParam },
+      });
+      S.order = r.order;
+      S.orders.unshift(r.order);
+      haptic('heavy');
+      $('#exForm').classList.add('hidden');
+      $('#exOrder').classList.remove('hidden');
+      renderOrderStage();
+      toast('Код принят — нажмите «Я оплатил»');
+    } catch (e) {
+      err.textContent = e.message;
+      toast(e.message);
+    } finally {
+      renderGiftMeta();
+    }
+  }
+
   async function submitOrder() {
     const s = S.settings;
     const err = $('#fErr');
     err.textContent = '';
-    const rate = S.currency === 'BTC' ? s.rateBTC : s.rateLTC;
+    const dir = currentDir();
+    const rate = Number(dir.rate);
+    const dec = displayOf(dir);
+    if (!(rate > 0)) return (err.textContent = 'Это направление сейчас недоступно — выберите другое.');
     const rawRub = parseFloat($('#inRub').value);
     const rawCrypto = parseFloat($('#inCrypto').value);
     const useCrypto = S.calcFrom === 'crypto' && isFinite(rawCrypto) && rawCrypto > 0;
     const cryptoAmount = useCrypto ? rawCrypto : null;
     const rub = useCrypto ? rubFromCrypto(rawCrypto, rate) : rawRub;
     const wallet = ($('#inWallet').value || '').trim();
+    const limits = (v) => `${fmtTrim(cryptoFromRub(v, rate, dec), dec)} ${dir.currency}`;
     if (!s.online) return (err.textContent = '⛔ Обмен временно недоступен — загляните позже.');
-    if (!isFinite(rub) || rub < s.minRub) return (err.textContent = `Минимальная сумма обмена — ${fmtRub(s.minRub)} (≈ ${fmtTrim(cryptoFromRub(s.minRub, rate))} ${S.currency}).`);
-    if (rub > s.maxRub) return (err.textContent = `Максимальная сумма обмена — ${fmtRub(s.maxRub)} (≈ ${fmtTrim(cryptoFromRub(s.maxRub, rate))} ${S.currency}).`);
-    if (!/^[a-zA-Z0-9]{26,90}$/.test(wallet)) return (err.textContent = 'Проверьте адрес кошелька — он выглядит некорректно.');
+    if (!isFinite(rub) || rub < s.minRub) return (err.textContent = `Минимальная сумма обмена — ${fmtRub(s.minRub)} (≈ ${limits(s.minRub)}).`);
+    if (rub > s.maxRub) return (err.textContent = `Максимальная сумма обмена — ${fmtRub(s.maxRub)} (≈ ${limits(s.maxRub)}).`);
+    let re = null;
+    try { re = new RegExp(dir.walletPattern); } catch (e) { re = null; }
+    if (re ? !re.test(wallet) : !/^[a-zA-Z0-9]{26,90}$/.test(wallet)) {
+      return (err.textContent = dir.walletError || 'Проверьте адрес кошелька — он выглядит некорректно.');
+    }
     const btn = $('#btnGo');
     btn.disabled = true;
     haptic('medium');
     try {
-      const body = useCrypto
-        ? { cryptoAmount, currency: S.currency, wallet, startParam }
-        : { rub, currency: S.currency, wallet, startParam };
+      const common = { currency: dir.currency, network: dir.network || undefined, wallet, startParam };
+      const body = useCrypto ? { cryptoAmount, ...common } : { rub, ...common };
       const r = await api('/api/orders', { method: 'POST', body });
       S.order = r.order;
       S.orders.unshift(r.order);
@@ -290,11 +632,107 @@
     return `<span class="chip" style="color:${m.color};background:${m.color}1a;border:1px solid ${m.color}55">${m.label}</span>`;
   }
 
+  // Гифт-заявка: клиент отдал код карты и ждёт выплату USDT.
+  const isGiftOrder = (o) => !!o && (o.direction === 'sell' || o.currency === 'GOOGLE_USD');
+  const giftNominal = (o) => Number(o.units) || 0;
+
+  // Сколько осталось до конца срока (1 час на сделку).
+  function timeLeft(expiresAt) {
+    const left = Number(expiresAt) - Date.now();
+    if (!(left > 0)) return null;
+    const m = Math.floor(left / 60000);
+    const sLeft = Math.floor((left % 60000) / 1000);
+    return m >= 60 ? `${Math.floor(m / 60)} ч ${String(m % 60).padStart(2, '0')} мин` : `${m}:${String(sLeft).padStart(2, '0')}`;
+  }
+  const ttlText = (o) => {
+    const left = timeLeft(o.expiresAt);
+    return left ? `⏳ На сделку осталось <b>${left}</b>` : '⏳ Срок на сделку истёк';
+  };
+
+  function renderGiftStage(o) {
+    const box = $('#exOrder');
+    const payout = `${fmtCrypto(o.crypto, 'USDT', 2)} (${o.network || 'USDT'})`;
+    if (o.status === 'new') {
+      // Клиент прислал код → подтверждает оплату → оператор проверяет карту.
+      box.innerHTML = `
+        <div class="card stage">
+          ${chip('details')}
+          <div class="pay-dir">${ICONS.swap}<span>🎁 Google Gift Card <b>$${giftNominal(o)}</b> → ${payout}</span></div>
+          <div class="stage-title">Подтвердите передачу карты</div>
+          <div class="stage-sub">Заявка <b>#${o.id}</b>. Проверьте код — он уйдёт оператору, как только вы нажмёте «Я оплатил».</div>
+          <div class="req-box" id="giftCodeBox">Код карты: ${esc(o.giftCode || '—')}</div>
+          <div class="copy-row">
+            <button class="btn btn-ghost btn-sm" id="cpGift">${ICONS.copy}<span>Копировать код</span></button>
+          </div>
+          <div class="note">${ttlText(o)}<br>После «Я оплатил» оператор проверит карту и выплатит ${payout}.</div>
+          <button class="btn btn-primary" style="margin-top:14px" id="btnGiftPaid">${ICONS.check}<span>Я оплатил</span></button>
+          <button class="btn btn-ghost" style="margin-top:8px" id="btnCancel">Отменить заявку</button>
+        </div>`;
+      $('#cpGift').addEventListener('click', () => copyText(o.giftCode || '', 'Код скопирован'));
+      $('#btnGiftPaid').addEventListener('click', async () => {
+        haptic('medium');
+        await changeOrder(o, 'paid');
+        const now = S.order;
+        if (now && now.id === o.id && now.status === 'paid') {
+          toast('Код отправлен на проверку ✅');
+          renderOrderStage();
+        }
+      });
+      $('#btnCancel').addEventListener('click', async () => { haptic('light'); await changeOrder(o, 'cancel'); });
+      return true;
+    }
+    if (o.status === 'paid') {
+      box.innerHTML = `
+        <div class="card stage">
+          <div class="spinner-wrap"><div class="spinner"></div><div class="spinner-ic">🔎</div></div>
+          <div class="stage-title">Карта на проверке</div>
+          <div class="stage-sub">Оператор проверяет Google Gift Card на <b>$${giftNominal(o)}</b> и валюту (<b>USD</b>).<br>Как только всё подтвердится — пришлём ${payout} на ваш кошелёк. Обычно 5–15 минут.</div>
+          <div class="req-box">Код карты: ${esc(o.giftCode || '—')}</div>
+          <div class="note">Не передавайте код никому, кроме поддержки VEGA. Если карта окажется недействительной — заявка будет отклонена.</div>
+        </div>`;
+      return true;
+    }
+    if (o.status === 'completed') {
+      box.innerHTML = `
+        <div class="card stage">
+          <svg class="okmark" viewBox="0 0 100 100"><circle cx="50" cy="50" r="41"/><path d="M32 51l13 13 24-27"/></svg>
+          <div class="stage-title">Карта принята — USDT выплачен</div>
+          <div class="stage-sub">Google Gift Card $${giftNominal(o)} → <b>${payout}</b><br>отправлены на ваш кошелёк. Спасибо, что выбираете VEGA ✦</div>
+          ${o.txUrl ? `
+            <div class="tx-box">
+              <div class="tx-label">🔗 Транзакция в блокчейне</div>
+              <a class="tx-link" href="${esc(o.txUrl)}" target="_blank" rel="noopener">${esc(o.txUrl)}</a>
+              <button class="btn btn-ghost btn-sm" style="margin-top:10px" id="cpTx">${ICONS.copy}<span>Копировать ссылку</span></button>
+            </div>` : `<div class="note" style="margin-top:12px">Выплата отправлена вручную. Ссылка на транзакцию появится здесь, если оператор её добавит.</div>`}
+          <button class="btn btn-primary" style="margin-top:18px" id="btnNew">Новая заявка</button>
+        </div>`;
+      const cpTx = $('#cpTx');
+      if (cpTx) cpTx.addEventListener('click', () => copyText(o.txUrl, 'Ссылка скопирована'));
+      $('#btnNew').addEventListener('click', resetToForm);
+      return true;
+    }
+    if (o.status === 'rejected' || o.status === 'cancelled') {
+      const rej = o.status === 'rejected';
+      const expired = o.cancelReason === 'Срок на сделку истёк';
+      box.innerHTML = `
+        <div class="card stage">
+          <div class="failmark">${rej ? '🔴' : '⚪'}</div>
+          <div class="stage-title">${rej ? 'Карта не принята' : expired ? 'Срок на сделку истёк' : 'Заявка отменена'}</div>
+          <div class="stage-sub">${rej ? 'Оператор не смог подтвердить карту по заявке #' + o.id + '. Проверьте код или напишите в поддержку.' : expired ? 'На сделку даётся 1 час. Создайте новую заявку с тем же кодом карты.' : 'Вы отменили заявку #' + o.id + '.'}</div>
+          <button class="btn btn-primary" style="margin-top:18px" id="btnNew">Новая заявка</button>
+        </div>`;
+      $('#btnNew').addEventListener('click', resetToForm);
+      return true;
+    }
+    return false;
+  }
+
   function renderOrderStage() {
     const box = $('#exOrder');
     const o = S.order;
     if (!box) return;
     if (!o) { box.innerHTML = ''; return; }
+    if (isGiftOrder(o) && renderGiftStage(o)) return;
     if (o.status === 'new') {
       box.innerHTML = `
         <div class="card stage">
@@ -311,6 +749,7 @@
       box.innerHTML = `
         <div class="card stage">
           ${chip('details')}
+          <div class="pay-dir">${ICONS.swap}<span>₽ → <b>${esc(dirLabel(o))}</b> · ${fmtCrypto(o.crypto, o.currency, currenciesDecimals(o))}</span></div>
           <div class="pay-amount"><div class="l">Переведите точно</div><div class="v">${fmtRub(o.payRub || o.rub)}</div></div>
           <div class="req-box" id="reqBox">${esc(o.requisites || 'Реквизиты готовятся…')}</div>
           <div class="copy-row">
@@ -322,7 +761,7 @@
             <button class="btn btn-ghost btn-sm" id="btnPick">📎 <span>${o.receipt ? 'Заменить чек (PDF)' : 'Прикрепить чек (PDF)'}</span></button>
             <div class="file-name ${o.receipt ? 'ok' : ''}" id="fileName">${o.receipt ? `✅ ${esc(o.receipt.name)} (${fmtSize(o.receipt.size)})` : 'Без чека оплата не подтвердится'}</div>
           </div>
-          <div class="note">Переведите <b>точную сумму</b> по реквизитам выше, прикрепите <b>чек в PDF</b>, затем нажмите кнопку ниже. После подтверждения оператор отправит ${fmtCrypto(o.crypto, o.currency)} на ваш кошелёк.</div>
+          <div class="note">Переведите <b>точную сумму</b> по реквизитам выше, прикрепите <b>чек в PDF</b>, затем нажмите кнопку ниже. После подтверждения оператор отправит ${fmtCrypto(o.crypto, o.currency, currenciesDecimals(o))} на ваш кошелёк.</div>
           <button class="btn btn-primary" style="margin-top:14px" id="btnPaid">${ICONS.check}<span>Я оплатил</span></button>
           <button class="btn btn-ghost" style="margin-top:8px" id="btnCancel">Отменить заявку</button>
         </div>`;
@@ -342,7 +781,7 @@
         <div class="card stage">
           <div class="spinner-wrap"><div class="spinner"></div><div class="spinner-ic">⏳</div></div>
           <div class="stage-title">Подтверждаем оплату</div>
-          <div class="stage-sub">Оператор проверяет поступление ${fmtRub(o.payRub || o.rub)} по заявке <b>#${o.id}</b>.<br>Как только платёж подтвердится — мы отправим ${fmtCrypto(o.crypto, o.currency)}.</div>
+          <div class="stage-sub">Оператор проверяет поступление ${fmtRub(o.payRub || o.rub)} по заявке <b>#${o.id}</b>.<br>Как только платёж подтвердится — мы отправим ${fmtCrypto(o.crypto, o.currency, currenciesDecimals(o))}.</div>
           ${o.receipt
             ? `<div class="note">🧾 Чек <b>${esc(o.receipt.name)}</b> отправлен оператору ✅</div>`
             : `<div class="file-box">
@@ -379,7 +818,7 @@
         <div class="card stage">
           <svg class="okmark" viewBox="0 0 100 100"><circle cx="50" cy="50" r="41"/><path d="M32 51l13 13 24-27"/></svg>
           <div class="stage-title">Обмен завершён!</div>
-          <div class="stage-sub">${fmtRub(o.payRub || o.rub)} → <b>${fmtCrypto(o.crypto, o.currency)}</b><br>отправлены на ваш кошелёк. Спасибо, что выбираете VEGA ✦</div>
+          <div class="stage-sub">${fmtRub(o.payRub || o.rub)} → <b>${fmtCrypto(o.crypto, o.currency, currenciesDecimals(o))}</b> (${esc(dirLabel(o))})<br>отправлены на ваш кошелёк. Спасибо, что выбираете VEGA ✦</div>
           ${o.txUrl ? `
             <div class="tx-box">
               <div class="tx-label">🔗 Транзакция в блокчейне</div>
@@ -504,17 +943,40 @@
       S.orders
         .map(
           (o) => `
-        <div class="card h-item">
-          <div class="h-ic ${o.currency.toLowerCase()}">${o.currency === 'BTC' ? '₿' : 'Ł'}</div>
+        <div class="card h-item" data-order="${o.id}" role="button" tabindex="0">
+          <div class="h-ic ${esc(dirOfOrder(o).coin)}">${esc(dirOfOrder(o).symbol)}${o.network ? `<small>${esc(o.network === 'TRC20' ? 'TRC' : 'ERC')}</small>` : ''}</div>
           <div class="h-main">
-            <div class="h-top"><span>₽ → ${o.currency}</span><span>${fmtRub(o.payRub || o.rub)}</span></div>
+            ${isGiftOrder(o)
+              ? `<div class="h-top"><span>🎁 $${giftNominal(o)} карта → USDT</span><span>${fmtCrypto(o.crypto, 'USDT', 2)}</span></div>`
+              : `<div class="h-top"><span>₽ → ${esc(dirLabel(o))}</span><span>${fmtRub(o.payRub || o.rub)}</span></div>`}
             <div class="h-sub"><span>#${o.id}${o.receipt ? ' 🧾' : ''}${o.txUrl ? ' 🔗' : ''} · ${fmtDate(o.createdAt)}</span>${chip(o.status)}</div>
-            <div class="h-sub" style="margin-top:2px"><span>${esc(o.wallet.slice(0, 10) + '…' + o.wallet.slice(-6))}</span><b style="color:#9fd8ff">${fmtCrypto(o.crypto, o.currency)}</b></div>
+            <div class="h-sub" style="margin-top:2px"><span>${esc(o.wallet.slice(0, 10) + '…' + o.wallet.slice(-6))}</span><b style="color:#9fd8ff">${fmtCrypto(o.crypto, o.currency, currenciesDecimals(o))}</b></div>
             ${o.txUrl ? `<div class="h-sub" style="margin-top:6px"><a href="${esc(o.txUrl)}" target="_blank" rel="noopener" style="color:var(--teal);font-size:11px;word-break:break-all">🔗 ${esc(o.txUrl.slice(0,50))}…</a></div>` : ''}
           </div>
         </div>`
         )
         .join('');
+    // Клик по записи открывает карточку заявки — в том числе завершённой или истёкшей.
+    v.querySelectorAll('[data-order]').forEach((el) =>
+      el.addEventListener('click', () => openOrderFromHistory(Number(el.dataset.order)))
+    );
+  }
+
+  // Открывает заявку из истории в карточке на вкладке «Обмен».
+  function openOrderFromHistory(id) {
+    const order = S.orders.find((o) => o.id === id);
+    if (!order) return;
+    S.order = order;
+    S.tab = 'exchange';
+    haptic('light');
+    document.querySelectorAll('.view').forEach((vv) => vv.classList.add('hidden'));
+    $('#view-exchange').classList.remove('hidden');
+    renderNav();
+    if (S.order) {
+      if ($('#exForm')) $('#exForm').classList.add('hidden');
+      if ($('#exOrder')) $('#exOrder').classList.remove('hidden');
+    }
+    renderOrderStage();
   }
 
   function renderRefs() {
@@ -549,7 +1011,7 @@
     const opLink = 'https://t.me/' + String(s.operator || '').replace(/^@/, '');
     $('#view-info').innerHTML = `
       <div class="card">
-        <div class="about"><b>VEGA</b> — современный сервис обмена Bitcoin и Litecoin. Честность, скорость и выгодные условия: мы создали сервис, которым удобно пользоваться каждый день.</div>
+        <div class="about"><b>VEGA</b> — современный сервис обмена Bitcoin, Litecoin и USDT (TRC20/ERC20). Честность, скорость и выгодные условия: мы создали сервис, которым удобно пользоваться каждый день.</div>
         <div class="feat">
           <div class="f"><span class="i">✅</span>Выгодный курс — максимум за каждый обмен</div>
           <div class="f"><span class="i">✅</span>Фиксированная сумма к оплате — известна заранее, без доплат</div>
@@ -686,7 +1148,13 @@
       if (!S.order) return toast('Сначала создайте заявку на обмен');
       const o = S.order;
       haptic('medium');
-      if (o.status === 'new') {
+      if (o.status === 'new' && isGiftOrder(o)) {
+        // Демо: карта «проверена» — сразу завершаем и показываем выплату USDT.
+        const r = await api(`/api/admin/order/${o.id}/confirm`, { method: 'POST' });
+        S.order = r.order;
+        renderOrderStage();
+        toast('Оператор проверил карту и выплатил USDT (демо)');
+      } else if (o.status === 'new') {
         const r = await api(`/api/admin/order/${o.id}/req`, { method: 'POST' });
         S.order = r.order;
         renderOrderStage();
