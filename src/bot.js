@@ -370,23 +370,29 @@ async function ordersMenu(ctx, edit = true) {
   else await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
 }
 
+// Настройки: переключатель ✅/⛔ конкретного направления (продукта) обмена.
 function settingsKb(s) {
   const usdt = currencies.get('USDT_TRC20');
   const errc = currencies.get('USDT_ERC20');
+  const on = (key) => (currencies.isEnabled(s, key) ? '✅' : '⛔');
   return new InlineKeyboard()
     .text(`💰 BTC/LTC ${s.feePercent ?? 0}%`, 's:fee')
     .text(`₮ TRC20 ${s[usdt.feeKey] ?? 0}%`, 's:fee_trc20')
     .row()
     .text(`₮ ERC20 ${s[errc.feeKey] ?? 0}%`, 's:fee_erc20')
     .row()
-    .text(`${currencies.isEnabled(s, 'USDT_TRC20') ? '✅' : '⛔'} USDT TRC20`, 's:dir_USDT_TRC20')
-    .text(`${currencies.isEnabled(s, 'USDT_ERC20') ? '✅' : '⛔'} USDT ERC20`, 's:dir_USDT_ERC20')
+    // Включение/выключение обмена конкретного продукта — для каждого направления отдельно.
+    .text(`${on('BTC')} BTC`, 's:dir_BTC')
+    .text(`${on('LTC')} LTC`, 's:dir_LTC')
+    .row()
+    .text(`${on('USDT_TRC20')} USDT TRC20`, 's:dir_USDT_TRC20')
+    .text(`${on('USDT_ERC20')} USDT ERC20`, 's:dir_USDT_ERC20')
     .row()
     .text('✍️ Курс ₮ TRC20', 's:rate_trc20')
     .text('✍️ Курс ₮ ERC20', 's:rate_erc20')
     .row()
     .text(`🎁 Gift −${s.giftPercent ?? 0}%`, 's:fee_gift')
-    .text(`${currencies.isEnabled(s, 'GOOGLE_USD') ? '✅' : '⛔'} Google Gift`, 's:dir_GOOGLE_USD')
+    .text(`${on('GOOGLE_USD')} Google Gift`, 's:dir_GOOGLE_USD')
     .row()
     .text('✍️ Курс Gift', 's:rate_gift')
     .text('🔄 Обновить курс', 's:refresh')
@@ -422,7 +428,7 @@ function settingsText(s) {
     `💵 Курс для клиентов: <b>${rateLine(s)}</b>\n` +
     `🎁 Google Gift: <b>${s.rateGOOGLEUSD ?? '—'} USDT за $1</b> номинала ` +
     `(скидка ${s.giftPercent ?? 0}% · карта $10 = ${((s.rateGOOGLEUSD ?? 0) * 10).toFixed(2)} USDT)\n` +
-    `🕹 Направления: ${currencies.list().map((p) => `${p.key} ${currencies.isEnabled(s, p.key) ? '✅' : '⛔'}`).join(' · ')}\n` +
+    `🕹 Направления: ${currencies.list().map((p) => `${p.label} ${currencies.isEnabled(s, p.key) ? '✅' : '⛔'}`).join(' · ')}\n` +
     `Лимиты: ${fmtRub(s.minRub)} — ${fmtRub(s.maxRub)}\n` +
     `🎁 Реферальный процент: <b>${s.refPercent}%</b>\n` +
     `Статус: ${s.online ? '🟢 Онлайн' : '🔴 Оффлайн'}\n` +
@@ -713,13 +719,17 @@ function register() {
 
     if (d.startsWith('s:dir_')) {
       const key = d.slice(6);
-      if (!currencies.get(key)) return;
+      const pair = currencies.get(key);
+      if (!pair) return;
       store.mutate((db) => {
         db.settings.enabled = db.settings.enabled || {};
         db.settings.enabled[key] = !currencies.isEnabled(db.settings, key);
       });
       const st = currencies.isEnabled(store.get().settings, key);
-      await ctx.answerCallbackQuery({ text: `${key}: ${st ? 'включено' : 'выключено'}` }).catch(() => {});
+      // Активные заявки выключенного направления продолжают обрабатываться — предупреждаем оператора.
+      const active = store.activeOrders().filter((o) => currencies.keyOf(o.currency, o.network) === key).length;
+      const extra = active ? ` · активных заявок: ${active} (обработайте вручную)` : '';
+      await ctx.answerCallbackQuery({ text: `${pair.label}: ${st ? 'включено ✅' : 'выключено ⛔'}${extra}` }).catch(() => {});
       return settingsMenu(ctx, true);
     }
     if (d === 's:online') {
