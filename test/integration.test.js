@@ -400,6 +400,38 @@ test('disabled directions cannot be ordered and old orders without network stay 
   assert.equal(order.network, null);
 });
 
+test('admin can turn off BTC and LTC exchange per product from settings', async () => {
+  calls = [];
+  await click(111, 'm:settings');
+  const kb = JSON.stringify((calls.find((c) => c.method === 'editMessageText') || {}).reply_markup || {});
+  assert.ok(kb.includes('s:dir_BTC') && kb.includes('s:dir_LTC'), 'в настройках есть переключатели BTC и LTC');
+  // Выключаем BTC — кнопка в меню меняется на ⛔.
+  calls = [];
+  await click(111, 's:dir_BTC');
+  assert.equal(store.get().settings.enabled.BTC, false);
+  const pub = await (await fetch(`http://127.0.0.1:${server.address().port}/api/settings`)).json();
+  assert.equal(pub.rates.find((r) => r.key === 'BTC').enabled, false);
+  assert.equal(pub.rates.find((r) => r.key === 'BTC').rate, null);
+  const denied = await api('/api/orders', { method: 'POST', body: { rub: 5000, currency: 'BTC', wallet: 'bc1' + 'a'.repeat(30) } });
+  assert.equal(denied.status, 400);
+  assert.match((await denied.json()).error, /BTC/);
+  const kbOff = JSON.stringify((calls.find((c) => c.method === 'editMessageText') || {}).reply_markup || {});
+  assert.ok(kbOff.includes('⛔ BTC'), 'кнопка BTC показывает выключенное состояние');
+  // Выключаем LTC — заявки не принимаются.
+  await click(111, 's:dir_LTC');
+  assert.equal(store.get().settings.enabled.LTC, false);
+  const deniedLtc = await api('/api/orders', { method: 'POST', body: { rub: 5000, currency: 'LTC', wallet: 'ltc1' + 'a'.repeat(30) } });
+  assert.equal(deniedLtc.status, 400);
+  // Включаем обратно — обмен снова работает.
+  await click(111, 's:dir_BTC');
+  await click(111, 's:dir_LTC');
+  assert.equal(currencies.isEnabled(store.get().settings, 'BTC'), true);
+  assert.equal(currencies.isEnabled(store.get().settings, 'LTC'), true);
+  const pubOn = await (await fetch(`http://127.0.0.1:${server.address().port}/api/settings`)).json();
+  assert.ok(pubOn.rates.find((r) => r.key === 'BTC').enabled);
+  assert.ok(pubOn.rates.find((r) => r.key === 'LTC').enabled);
+});
+
 test('operator changes USDT commissions independently; TRC20 and ERC20 rates recompute', async () => {
   const before = store.get().settings;
   assert.ok(before.rateUSDTTRC20 > 0 && before.rateUSDTERC20 > 0);
