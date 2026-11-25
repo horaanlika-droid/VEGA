@@ -85,6 +85,17 @@
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
         </button>
       </div>
+      <div class="adm-session off" id="admSession">
+        <div class="adm-session-info">
+          <span class="adm-dot" id="admSessionDot"></span>
+          <span class="adm-session-text">
+            <b id="admSessionTitle">Торги закрыты</b>
+            <small id="admSessionSub">Клиенты видят «обмен временно недоступен»</small>
+          </span>
+        </div>
+        <button class="adm-session-btn" id="admSessionBtn">🟢 Открыть торги</button>
+      </div>
+
       <div class="adm-tabs" id="admTabs" role="tablist">
         <button class="adm-tab on" data-tab="crypto" role="tab">₿ Валюты</button>
         <button class="adm-tab" data-tab="gift" role="tab">🎁 Карты</button>
@@ -92,17 +103,8 @@
       </div>
 
       <div class="adm-pane" data-pane="crypto">
-        <div class="adm-note">Включённые направления сразу видны клиентам. Заявки выключенного направления в работе обработайте вручную.</div>
+        <div class="adm-note">Включённые направления сразу видны клиентам. Курс клиентам не показывается — сумму в рублях оператор называет в заявке, клиент соглашается или отказывается. Заявки выключенного направления в работе обработайте вручную.</div>
         <div class="adm-toggles" id="admCryptoDirs"></div>
-        <div class="f-sep" style="margin:14px 0 10px"><span>Комиссии (0–50 %)</span></div>
-        <label class="f-label" for="admFeeLtc"><span>BTC / LTC — общий %</span></label>
-        <div class="f-box"><input id="admFeeLtc" type="number" inputmode="decimal" min="0" max="50" step="0.5"></div>
-        <label class="f-label" for="admFeeTrc20" style="margin-top:10px"><span>USDT TRC20 — %</span></label>
-        <div class="f-box"><input id="admFeeTrc20" type="number" inputmode="decimal" min="0" max="50" step="0.5"></div>
-        <label class="f-label" for="admFeeErc20" style="margin-top:10px"><span>USDT ERC20 — %</span></label>
-        <div class="f-box"><input id="admFeeErc20" type="number" inputmode="decimal" min="0" max="50" step="0.5"></div>
-        <div class="f-err" id="admCryptoErr"></div>
-        <button class="btn btn-primary" style="margin-top:10px" id="admCryptoSave"><span>Сохранить комиссии</span></button>
       </div>
 
       <div class="adm-pane hidden" data-pane="gift">

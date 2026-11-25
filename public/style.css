@@ -582,3 +582,48 @@ body.sheet-lock { overflow: hidden; }
   background: rgba(30, 20, 4, 0.35);
 }
 .lc-admin-btn:active { background: rgba(30, 20, 4, 0.55); }
+
+/* Торги: статус и кнопка открытия/закрытия в админке */
+.adm-session {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  border-radius: 14px; padding: 10px 12px; margin: -2px 0 12px;
+  border: 1px solid var(--line); background: rgba(2, 10, 20, 0.5);
+}
+.adm-session.on { border-color: rgba(34, 229, 162, 0.5); box-shadow: 0 0 18px rgba(34, 229, 162, 0.18), inset 0 0 22px rgba(34, 229, 162, 0.06); }
+.adm-session.off { border-color: rgba(255, 84, 112, 0.35); }
+.adm-session-info { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.adm-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: #ff5470; box-shadow: 0 0 10px rgba(255, 84, 112, 0.8); }
+.adm-session.on .adm-dot { background: #22e5a2; box-shadow: 0 0 10px rgba(34, 229, 162, 0.8); }
+.adm-session-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.adm-session-text b { font-size: 12.5px; letter-spacing: .02em; }
+.adm-session-text small { font-size: 10.5px; color: var(--mut); line-height: 1.35; }
+.adm-session-btn {
+  flex: none; border: none; border-radius: 999px; cursor: pointer;
+  font: 800 12px 'Manrope', sans-serif; letter-spacing: .02em; padding: 10px 13px;
+  color: #04222e; background: linear-gradient(92deg, var(--blue), var(--teal));
+  transition: transform .12s, opacity .2s;
+}
+.adm-session.off .adm-session-btn { background: linear-gradient(92deg, #22e5a2, #17e9c0); }
+.adm-session.on .adm-session-btn { background: rgba(255, 84, 112, 0.14); color: #ff9aa8; border: 1px solid rgba(255, 84, 112, 0.45); }
+.adm-session-btn:active { transform: scale(0.96); }
+.adm-session-btn:disabled { opacity: .6; }
+
+/* Направления: выключенные — чёрно-белые, включённые при открытой сессии — подсвечены */
+.adm-dir { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.adm-coin { flex: none; }
+.adm-dir-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; text-align: left; }
+.adm-dir-text small { display: block; }
+.adm-toggle:not(.on) { opacity: .82; }
+.adm-toggle:not(.on) .coin-ic { filter: grayscale(1) brightness(.62) contrast(.95); }
+.adm-toggle:not(.on) .adm-dir-text { color: var(--mut); }
+#adminSheet.trading-on .adm-toggle.on {
+  border-color: rgba(23, 233, 192, 0.55);
+  background: rgba(23, 233, 192, 0.07);
+  box-shadow: 0 0 0 1px rgba(23, 233, 192, 0.35), 0 10px 28px rgba(23, 233, 192, 0.13);
+}
+#adminSheet:not(.trading-on) .adm-toggle.on { border-color: var(--line); box-shadow: none; }
+
+/* Клиент: плитки направлений чёрно-белые, когда торги закрыты */
+.group-card.off { filter: grayscale(1) brightness(.68); }
+.group-card.off .group-chev { color: var(--mut); }
+.group-card:not(.off) { box-shadow: 0 0 0 1px rgba(23, 233, 192, 0.3), 0 10px 34px rgba(0, 0, 0, 0.35); }

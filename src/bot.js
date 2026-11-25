@@ -9,6 +9,7 @@ const currencies = require('./currencies');
 const { esc, fmtRub, fmtCrypto, fmtDate, fmtSize, parseNum } = require('./util');
 const clientbot = require('./clientbot');
 const widget = require('./widget');
+const quoteOps = require('./quote');
 
 let bot = null;
 const flows = new Map(); // adminId -> { type, orderId?, userId? }
@@ -17,6 +18,7 @@ const isAdmin = (ctx) => ctx.chat?.type === 'private' && admins.has(ctx.from?.id
 
 const STATUS_LABEL = {
   new: '🔍 Идёт подбор реквизитов',
+  quote: '💰 Сумма названа — ждём ответ клиента',
   details: '💳 Ожидает оплаты клиентом',
   paid: '⏳ Клиент оплатил — нужно подтверждение',
   giftNew: '🕐 Ожидает подключения оператора (кнопка «🤝»)',
@@ -46,7 +48,7 @@ function orderText(o) {
   return (
     `📥 <b>Заявка #${o.id}</b>\n` +
     `👤 ${esc(o.userName)}${o.userUsername ? ' (@' + esc(o.userUsername) + ')' : ''} · <code>${esc(o.userId)}</code>\n` +
-    `💵 Сумма: <b>${fmtRub(o.rub)}</b>\n` +
+    (o.rub ? `💵 Сумма: <b>${fmtRub(o.rub)}</b>\n` : `💵 Сумма: <b>ещё не названа</b> (клиент просит ${cryptoText(o)})\n`) +
     (isGift(o)
       ? `🎁 Карта: <b>Google Gift Card $${giftUnits(o)}</b> → выплата ${payoutText(o)}\n` +
         `🎟 Код карты: <code>${esc(o.giftCode || '—')}</code>\n` +
@@ -94,6 +96,12 @@ function orderKb(o) {
     kb.text('✅ Карта проверена — выплатить USDT', `o:${o.id}:confirm`)
       .row()
       .text('❌ Карта недействительна', `o:${o.id}:unpaid`);
+  } else if (o.status === 'quote') {
+    // Оператор назвал сумму — ждём согласия клиента (кнопки в приложении и в ЛС клиенту).
+    kb.text('🔄 Обновить', `o:${o.id}`).text('❌ Отклонить', `o:${o.id}:reject`);
+  } else if (o.status === 'new' && !isGift(o) && !(o.payRub || o.rub)) {
+    // Сначала оператор называет сумму в рублях — клиент соглашается, сделка продолжается.
+    kb.text('💰 Назвать сумму', `o:${o.id}:quote`).text('❌ Отклонить', `o:${o.id}:reject`);
   } else if (o.status === 'new') {
     kb.text('💳 Выдать реквизиты', `o:${o.id}:req`).text('❌ Отклонить', `o:${o.id}:reject`);
   } else if (o.status === 'details') {
@@ -162,6 +170,24 @@ async function broadcast(text, options = {}) {
     try { await bot.api.sendMessage(id, text, options); }
     catch (e) { console.error(`[bot] admin ${id}:`, e.message); }
   }));
+}
+
+// Объявление всем клиентам, которые когда-либо открывали бота/приложение.
+const CLIENTS_ANNOUNCE_OPEN =
+  '🟢 <b>VEGA: торги открыты!</b>\n\n' +
+  'Снова принимаем заявки: BTC · LTC · USDT (TRC20/ERC20) и Google Gift Card 🎁\n' +
+  'Официальный обмен без документов и регистрации — в приложении и в боте.';
+
+async function announceToClients(text) {
+  if (!bot) return { sent: 0, failed: 0 };
+  const users = Object.keys(store.get().users || {});
+  let sent = 0; let failed = 0;
+  await Promise.all(users.map(async (id) => {
+    try { await bot.api.sendMessage(id, text, { parse_mode: 'HTML' }); sent += 1; }
+    catch (e) { failed += 1; console.error(`[bot] announce → ${id}:`, e.message); }
+  }));
+  console.log(`[VEGA] объявление клиентам: отправлено ${sent}, не доставлено ${failed}`);
+  return { sent, failed };
 }
 
 async function sendReceiptTo(adminId, o) {
@@ -257,6 +283,15 @@ async function onOrderEvent({ order, type }) {
   if (type === 'tx') {
     await sendOrUpdateOrderAdmin(order);
     await notifyClientTx(order);
+  }
+  if (type === 'quote_asked') {
+    await broadcast(`💰 <b>По заявке #${order.id} названа сумма к оплате: ${fmtRub(order.payRub || order.rub)}.</b>\nЖдём ответа клиента (согласен / отказаться).`, { parse_mode: 'HTML', reply_markup: orderKb(order) });
+  }
+  if (type === 'quote_accepted') {
+    await broadcast(`✅ <b>Клиент согласился с суммой по заявке #${order.id}.</b>\nК оплате: ${fmtRub(order.payRub || order.rub)}.\nМожно выдавать реквизиты.`, { parse_mode: 'HTML', reply_markup: orderKb(order) });
+  }
+  if (type === 'quote_declined') {
+    await broadcast(`⚪ <b>Клиент не согласился с суммой по заявке #${order.id}</b> (${fmtRub(order.payRub || order.rub)}).\nЗаявка отменена клиентом.`, { parse_mode: 'HTML' });
   }
 }
 
@@ -586,15 +621,34 @@ async function handleAdminText(ctx) {
       await Promise.all([sendOrUpdateOrderAdmin(upd), notifyClientTx(upd)]);
       return ctx.reply(`✅ Ссылка на блокчейн сохранена для заявки #${o.id}:\n${text}\n\nКлиент увидит её в приложении.`, { reply_markup: homeKb() });
     }
-    const expectedStatus = f.type === 'amt' ? 'details' : f.type === 'quote' || f.type === 'req' ? 'new' : null;
-    if (expectedStatus && (!o || o.status !== expectedStatus || (o.version || 0) !== f.version)) {
+    const expectedStatuses = f.type === 'amt' ? ['details'] : f.type === 'quote' ? ['new', 'quote'] : f.type === 'req' ? ['new'] : null;
+    if (expectedStatuses && (!o || !expectedStatuses.includes(o.status) || (f.type !== 'quote' && (o.version || 0) !== f.version))) {
       flows.delete(ctx.from.id);
       return ctx.reply('Заявка уже изменена другим оператором или клиентом. Откройте её заново через /menu.', { reply_markup: homeKb() });
     }
     if (f.type === 'quote') {
       const pay = parseNum(text);
       if (!Number.isFinite(pay) || pay <= 0) return ctx.reply('Пришлите положительную сумму в рублях.');
-      return requisitesPrompt(ctx, o, pay);
+      flows.delete(ctx.from.id);
+      const upd = quoteOps.setQuote(o.id, pay);
+      await sendOrUpdateOrderAdmin(upd);
+      // Клиенту — карточка согласования с кнопками (и такое же окно есть в приложении).
+      const kb = new InlineKeyboard()
+        .text('✅ Согласен, продолжить', `c:quote:${o.id}:yes`)
+        .text('❌ Отказаться', `c:quote:${o.id}:no`);
+      let delivered = false;
+      try {
+        await bot.api.sendMessage(o.userId,
+          `💰 <b>Заявка #${o.id}: сумма к оплате</b>\n\n` +
+          `Оператор VEGA назвал стоимость <b>${cryptoText(o)} (${esc(dirShort(o))})</b>:\n` +
+          `<b>${fmtRub(pay)}</b>\n\n` +
+          `Сделка продолжится только после вашего согласия. Ничего не переводите, пока не подтвердите.`,
+          { parse_mode: 'HTML', reply_markup: kb });
+        delivered = true;
+      } catch (e) { console.error('[bot] quote → client:', e.message); }
+      return ctx.reply(`✅ Сумма ${fmtRub(pay)} отправлена клиенту на согласование по заявке #${o.id}.\n` +
+        (delivered ? 'Клиент получил сообщение с кнопками «Согласен / Отказаться» (и уведомление в приложении).' : 'Личное сообщение не доставлено — сумма ждёт согласия клиента в приложении.'),
+        { reply_markup: homeKb() });
     }
     if (f.type === 'req') {
       if (!text || text.length > 900) return ctx.reply('Реквизиты должны содержать от 1 до 900 символов. Отправьте их целиком ещё раз.');
@@ -764,9 +818,15 @@ function register() {
       return settingsMenu(ctx, true);
     }
     if (d === 's:online') {
+      const was = store.get().settings.online;
       store.mutate((db) => {
         db.settings.online = !db.settings.online;
       });
+      const now = store.get().settings.online;
+      if (!was && now) {
+        const { sent } = await announceToClients(CLIENTS_ANNOUNCE_OPEN);
+        await ctx.answerCallbackQuery({ text: `Торги открыты 🟢 · объявление отправлено: ${sent}` }).catch(() => {});
+      }
       return settingsMenu(ctx, true);
     }
     if (d === 's:refresh') {
@@ -810,7 +870,7 @@ function register() {
         }
         return txPrompt(ctx, o);
       }
-      const allowed = { req: ['new'], quote: ['new'], amt: ['details'], reject: ['new', 'details'], unpaid: ['paid'], confirm: ['details', 'paid'], connect: ['new'] };
+      const allowed = { req: ['new'], quote: ['new', 'quote'], amt: ['details'], reject: ['new', 'details', 'quote'], unpaid: ['paid'], confirm: ['details', 'paid'], connect: ['new'] };
       // Гифт-карту подтверждают только из «paid» — то есть когда клиент уже отправил код
       // (в новой двухфазной схеме код переводит заявку new/details → paid).
       if (isGift(o)) allowed.confirm = ['paid'];
@@ -820,7 +880,12 @@ function register() {
       if (!allowed[act]?.includes(o.status)) {
         return ctx.reply('Действие недоступно: статус заявки уже изменился. Откройте заявку заново.', { reply_markup: homeKb() });
       }
-      if (act === 'req') return requisitesPrompt(ctx, o);
+      if (act === 'req') {
+        if (!isGift(o) && !(o.payRub || o.rub)) {
+          return ctx.reply('Сначала назовите сумму в рублях: кнопка «💰 Назвать сумму». Клиент согласует — и можно выдавать реквизиты.');
+        }
+        return requisitesPrompt(ctx, o);
+      }
       if (act === 'quote' || act === 'amt') {
         flows.set(ctx.from.id, { type: act, orderId: id, version: o.version || 0 });
         return ctx.reply(`✏️ Заявка #${id}. Отправьте точную сумму к оплате в ₽ (сейчас ${fmtRub(o.payRub || o.rub)}).\n/cancel — отмена`);
@@ -879,6 +944,7 @@ function createBot(options = {}) {
   register();
   bus.on('order_event', onOrderEvent);
   bus.on('support_message', onSupportMessage);
+  bus.on('announce', ({ text }) => announceToClients(text));
   return bot;
 }
 

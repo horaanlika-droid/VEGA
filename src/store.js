@@ -107,12 +107,12 @@ const mutate = (fn) => {
 
 function publicSettings() {
   const s = db.settings;
-  // Клиенту отдаём только итоговые курсы (комиссия уже зашита внутрь).
-  // feePercent и базовые курсы не светим — это видит только оператор в боте.
+  // Клиенту курс покупки крипты не отдаём вообще: сумму в рублях называет оператор в заявке,
+  // клиент соглашается или отказывается. Виден только курс продажи подарочной карты (USDT за $1).
   return {
-    rateBTC: s.rateBTC,
-    rateLTC: s.rateLTC,
-    rates: currencies.publicRates(s),
+    rateBTC: null,
+    rateLTC: null,
+    rates: currencies.publicRates(s).map((r) => (r.direction === 'sell' ? r : { ...r, rate: null })),
     rateUpdatedAt: s.rateUpdatedAt,
     minRub: s.minRub,
     maxRub: s.maxRub,
