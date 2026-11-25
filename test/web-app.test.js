@@ -175,3 +175,114 @@ test('calculator converts both ways and never mentions any fee', async (t) => {
   assert.match(a.document.querySelector('#cryptoLimits').textContent, /LTC/);
   assert.ok(!/комисси/i.test(a.document.querySelector('#view-exchange').textContent));
 });
+
+/* ---------- USDT TRC20 / ERC20 ---------- */
+
+const usdtSettings = {
+  ...settings,
+  rateUSDTTRC20: 98.75,
+  rateUSDTERC20: 101.5,
+  rates: [
+    { key: 'BTC', currency: 'BTC', network: null, label: 'BTC', symbol: '₿', coin: 'btc', decimals: 8, display: null, walletHint: 'Адрес BTC-кошелька (bc1… / 1… / 3…)', walletPattern: '^(bc1[a-zA-HJ-NP-Z0-9]{25,62}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$', walletError: 'Проверьте адрес BTC-кошелька — он выглядит некорректно.', rate: settings.rateBTC, enabled: true },
+    { key: 'LTC', currency: 'LTC', network: null, label: 'LTC', symbol: 'Ł', coin: 'ltc', decimals: 8, display: null, walletHint: 'Адрес LTC-кошелька', walletPattern: '^(ltc1[a-zA-HJ-NP-Z0-9]{25,62}|[LM3][a-km-zA-HJ-NP-Z1-9]{25,34})$', walletError: 'Проверьте адрес LTC-кошелька — он выглядит некорректно.', rate: settings.rateLTC, enabled: true },
+    { key: 'USDT_TRC20', currency: 'USDT', network: 'TRC20', label: 'USDT TRC20', symbol: '₮', coin: 'usdt', decimals: 6, display: 2, walletHint: 'Адрес USDT TRC20 (T…, 34 символа)', walletPattern: '^T[1-9A-HJ-NP-Za-km-z]{33}$', walletError: 'Это не похоже на адрес USDT в сети TRC20 — он начинается с T и содержит 34 символа.', networkHint: 'сеть TRON · низкая комиссия, зачисление 1–3 мин', rate: 98.75, enabled: true },
+    { key: 'USDT_ERC20', currency: 'USDT', network: 'ERC20', label: 'USDT ERC20', symbol: '₮', coin: 'usdt', decimals: 6, display: 2, walletHint: 'Адрес USDT ERC20 (0x + 40 символов)', walletPattern: '^0x[0-9a-fA-F]{40}$', walletError: 'Это не похоже на адрес USDT в сети ERC20 — нужен 0x и 40 hex-символов.', networkHint: 'сеть Ethereum · высокая комиссия сети, зачисление 5–15 мин', rate: 101.5, enabled: true },
+  ],
+};
+
+// Приложение с настройками, где есть USDT.
+async function usdtApp(t, order = initial) {
+  const dom = new JSDOM(html, { url: 'https://vega.example', runScripts: 'outside-only', pretendToBeVisual: true });
+  t.after(() => dom.window.close());
+  const { window } = dom;
+  const calls = [];
+  let refresh;
+  let handler = () => null;
+  window.console.warn = () => {};
+  window.setInterval = (fn) => { refresh = fn; return 1; };
+  const json = (data) => ({ ok: true, json: async () => structuredClone(data) });
+  window.fetch = async (url, options) => {
+    const pathname = new URL(url, window.location.href).pathname;
+    calls.push({ pathname, ...options });
+    const custom = handler(pathname, options);
+    if (custom) return custom;
+    if (pathname === '/api/init') return json({ settings: usdtSettings, me: { id: 999 }, demo: false });
+    if (pathname === '/api/me') return json({ orders: [order], me: { id: 999 } });
+    if (pathname === '/api/settings') return json(usdtSettings);
+    if (pathname === '/api/order/1') return json({ order });
+    if (pathname === '/api/orders') return json({ order: { ...initial, id: 2, currency: 'USDT', network: 'TRC20' } });
+    throw new Error('Unexpected request: ' + pathname);
+  };
+  window.eval(script);
+  await tick();
+  assert.ok(refresh, 'application initialized polling');
+  return { window, calls, json, refresh: () => refresh(), handle: (fn) => { handler = fn; }, document: window.document };
+}
+
+test('direction segment offers BTC, LTC, USDT TRC20 and USDT ERC20', async (t) => {
+  const a = await usdtApp(t);
+  const buttons = [...a.document.querySelectorAll('#segCur button')];
+  assert.deepEqual(buttons.map((b) => b.dataset.c), ['BTC', 'LTC', 'USDT_TRC20', 'USDT_ERC20']);
+  assert.equal(buttons.filter((b) => b.classList.contains('on')).length, 1);
+  assert.match(a.document.querySelector('#cryptoLimits').textContent, /BTC/);
+});
+
+test('USDT direction converts rub to 2-decimal amount and shows network', async (t) => {
+  const a = await usdtApp(t);
+  a.document.querySelectorAll('#segCur button')[2].click();
+  assert.match(a.document.querySelector('#netPick').textContent, /TRC20/);
+  assert.match(a.document.querySelector('#walHint').textContent, /только в сети TRC20/);
+  assert.match(a.document.querySelector('#fMeta').textContent, /98[.,]75/);
+  assert.match(a.document.querySelector('#inWallet').placeholder, /TRC20/);
+  const rub = a.document.querySelector('#inRub');
+  rub.value = '10000';
+  rub.dispatchEvent(new a.window.Event('input', { bubbles: true }));
+  // 10000 / 98.75 = 101.265…, точность USDT — 2 знака (не больше).
+  assert.equal(a.document.querySelector('#inCrypto').value, '101.26');
+  // Обратный пересчёт тоже опирается на тот же курс.
+  const crypto = a.document.querySelector('#inCrypto');
+  crypto.value = '50';
+  crypto.dispatchEvent(new a.window.Event('input', { bubbles: true }));
+  assert.equal(rub.value, String(Math.ceil(50 * 98.75 - 1e-6)));
+});
+
+test('USDT order sends network and validates the address per network', async (t) => {
+  const a = await usdtApp(t);
+  a.document.querySelectorAll('#segCur button')[2].click();
+  a.document.querySelector('#inRub').value = '10000';
+  a.document.querySelector('#inWallet').value = '0x' + 'a'.repeat(40);
+  a.document.querySelector('#btnGo').click();
+  await tick();
+  assert.match(a.document.querySelector('#fErr').textContent, /TRC20/);
+  assert.ok(!a.calls.some((c) => c.pathname === '/api/orders'));
+  a.document.querySelector('#inWallet').value = 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ';
+  a.document.querySelector('#btnGo').click();
+  await tick();
+  const post = a.calls.find((c) => c.pathname === '/api/orders');
+  assert.ok(post, 'order request sent');
+  const body = JSON.parse(post.body);
+  assert.equal(body.currency, 'USDT');
+  assert.equal(body.network, 'TRC20');
+  assert.equal(body.wallet, 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ');
+});
+
+test('disabled direction disappears from the segment without breaking the form', async (t) => {
+  const a = await usdtApp(t);
+  const withoutErc = {
+    ...usdtSettings,
+    rates: usdtSettings.rates.map((r) => (r.key === 'USDT_ERC20' ? { ...r, enabled: false, rate: null } : r)),
+  };
+  a.handle((url) => (url === '/api/settings' ? a.json(withoutErc) : null));
+  // Опрос настроек обновляет сегмент направлений на месте, без перезагрузки страницы.
+  await a.refresh();
+  const keys = [...a.document.querySelectorAll('#segCur button')].map((b) => b.dataset.c);
+  assert.deepEqual(keys, ['BTC', 'LTC', 'USDT_TRC20']);
+});
+
+test('history shows USDT network and 2-decimal payout', async (t) => {
+  const usdtOrder = { ...initial, id: 1, currency: 'USDT', network: 'TRC20', crypto: 101.265823, rate: 98.75, status: 'completed' };
+  const a = await usdtApp(t, usdtOrder);
+  assert.match(a.document.querySelector('#view-history').textContent, /USDT TRC20/);
+  assert.match(a.document.querySelector('#view-history').textContent, /101\.27 USDT/);
+  assert.match(a.document.querySelector('.h-ic.usdt').textContent, /TRC/);
+});

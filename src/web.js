@@ -4,12 +4,15 @@ const config = require('./config');
 const store = require('./store');
 const bus = require('./bus');
 const receipts = require('./receipts');
+const currencies = require('./currencies');
 const { validateInitData, parseUser } = require('./validate');
 
 const clientOrder = (o) => ({
   id: o.id,
   rub: o.rub,
   currency: o.currency,
+  network: o.network || null,
+  currencyLabel: currencies.label(o.currency, o.network),
   wallet: o.wallet,
   crypto: o.crypto,
   rate: o.rate,
@@ -118,11 +121,21 @@ function startWeb() {
     const a = needAuth(req, res);
     if (!a) return;
     const s = store.get().settings;
-    const currency = req.body.currency;
+    const currency = String(req.body.currency || '').toUpperCase();
+    const network = req.body.network ? String(req.body.network).toUpperCase() : null;
+    const pair = currencies.find(currency, network);
     const wallet = String(req.body.wallet || '').trim();
     if (!s.online) return res.status(403).json({ error: 'Обмен временно недоступен' });
-    if (!['BTC', 'LTC'].includes(currency)) return res.status(400).json({ error: 'Неизвестная валюта' });
-    const rate = currency === 'BTC' ? s.rateBTC : s.rateLTC;
+    if (!pair) return res.status(400).json({ error: 'Неизвестная валюта' });
+    if (!currencies.isEnabled(s, pair.key)) {
+      return res.status(400).json({ error: `Обмен ${pair.label} временно не проводится — выберите другое направление.` });
+    }
+    const rate = currencies.rateOf(s, pair.currency, pair.network);
+    if (!rate) return res.status(400).json({ error: `Курс ${pair.label} ещё не настроен — выберите другое направление.` });
+    const walletError = currencies.validateWallet(pair.currency, pair.network, wallet);
+    if (walletError) return res.status(400).json({ error: walletError });
+    // Округляем выплату вниз до точности сети, чтобы не обещать больше, чем можем отправить.
+    const floorCrypto = (v) => Math.floor(v * 10 ** pair.decimals + 1e-6) / 10 ** pair.decimals;
     let rub = Number(req.body.rub);
     let crypto = null;
     const hasRub = req.body.rub !== undefined && req.body.rub !== null && req.body.rub !== '';
@@ -133,22 +146,22 @@ function startWeb() {
       if (!isFinite(amount) || amount <= 0) return res.status(400).json({ error: `Минимальная сумма — ${s.minRub} ₽` });
       rub = Math.ceil(amount * rate - 1e-6);
       if (!isFinite(rub)) return res.status(400).json({ error: `Максимальная сумма — ${s.maxRub} ₽` });
-      crypto = amount;
+      crypto = floorCrypto(amount);
+      if (!(crypto > 0)) return res.status(400).json({ error: `Минимальная сумма — ${s.minRub} ₽` });
     }
     if (rub < s.minRub) return res.status(400).json({ error: `Минимальная сумма — ${s.minRub} ₽` });
     if (rub > s.maxRub) return res.status(400).json({ error: `Максимальная сумма — ${s.maxRub} ₽` });
-    if (wallet.length < 26 || wallet.length > 128 || /\s/.test(wallet))
-      return res.status(400).json({ error: 'Проверьте адрес кошелька' });
     const user = store.touchUser(a.user, req.body.startParam || '');
     const order = store.createOrder({
       userId: String(user.id),
       userName: user.name,
       userUsername: user.username,
       rub,
-      currency,
+      currency: pair.currency,
+      network: pair.network,
       wallet,
       rate,
-      crypto: crypto ?? rub / rate,
+      crypto: crypto ?? floorCrypto(rub / rate),
       referrer: user.referrer,
     });
     bus.emit('order_event', { order, type: 'new' });

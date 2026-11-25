@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const currencies = require('./currencies');
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
@@ -12,14 +13,20 @@ const defaults = () => ({
     rateLTC: 9400, // ₽ за 1 LTC (итоговый, с комиссией)
     baseRateBTC: null, // официальный курс BTC без комиссии (авто)
     baseRateLTC: null, // официальный курс LTC без комиссии (авто)
-    feePercent: 2, // комиссия обменника, % поверх официального курса
+    baseRateUSDT: null, // официальный курс USDT → ₽ (для TRC20 и ERC20)
+    feePercent: 2, // комиссия обменника по крипте, % поверх официального курса
+    feePercentUSDTTRC20: 4, // комиссия по USDT TRC20 (сеть дешевле, но ликвидность иная)
+    feePercentUSDTERC20: 5, // комиссия по USDT ERC20 (дорогие комиссии сети)
+    rateUSDTTRC20: 100, // стартовые итоговые курсы для USDT (₽ за 1 USDT)
+    rateUSDTERC20: 101,
+    enabled: { BTC: true, LTC: true, USDT_TRC20: true, USDT_ERC20: true },
     rateUpdatedAt: null,
     rateSource: 'manual',
     minRub: 3000,
     maxRub: 300000,
     online: true,
     announcement:
-      '🚀 VEGA официально начинает работу! Принимаем заявки на обмен BTC и LTC. Минимальная сумма обмена — от 3 000 ₽.',
+      '🚀 VEGA официально начинает работу! Принимаем заявки на обмен BTC, LTC и USDT (TRC20/ERC20). Минимальная сумма обмена — от 3 000 ₽.',
     refPercent: 1,
     operator: '@VEGA_obmen',
     channel: 'https://t.me/VEGA_Official_65',
@@ -46,6 +53,13 @@ function load() {
       db.settings = Object.assign(defaults().settings, raw.settings || {});
       // Миграция старых баз
       if (!Array.isArray(db.support)) db.support = [];
+      if (!db.settings.enabled || typeof db.settings.enabled !== 'object') {
+        db.settings.enabled = defaults().settings.enabled;
+      } else {
+        for (const [key, on] of Object.entries(defaults().settings.enabled)) {
+          if (db.settings.enabled[key] === undefined) db.settings.enabled[key] = on;
+        }
+      }
       if (!Number.isFinite(db.supportSeq)) db.supportSeq = (db.support?.length || 0) + 1;
       for (const o of db.orders || []) {
         if (o.txUrl === undefined) o.txUrl = null;
@@ -89,6 +103,7 @@ function publicSettings() {
   return {
     rateBTC: s.rateBTC,
     rateLTC: s.rateLTC,
+    rates: currencies.publicRates(s),
     rateUpdatedAt: s.rateUpdatedAt,
     minRub: s.minRub,
     maxRub: s.maxRub,
@@ -157,6 +172,7 @@ function createOrder(o) {
       userUsername: o.userUsername || null,
       rub: o.rub,
       currency: o.currency,
+      network: o.network || null,
       wallet: o.wallet,
       rate: o.rate,
       crypto: o.crypto,

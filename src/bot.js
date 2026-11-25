@@ -5,6 +5,7 @@ const bus = require('./bus');
 const admins = require('./admins');
 const rates = require('./rates');
 const receipts = require('./receipts');
+const currencies = require('./currencies');
 const { esc, fmtRub, fmtCrypto, fmtDate, fmtSize, parseNum } = require('./util');
 
 let bot = null;
@@ -23,13 +24,19 @@ const STATUS_LABEL = {
 
 /* ---------- рендер сообщений ---------- */
 
+// Название направления: «USDT TRC20», «BTC». Старые заявки без network читаются корректно.
+const dirLabel = (o) => currencies.label(o.currency, o.network);
+const dirShort = (o) => currencies.shortLabel(o.currency, o.network);
+const cryptoText = (o, amount = o.crypto) =>
+  fmtCrypto(amount, o.currency, currencies.displayDecimals(o.currency, o.network));
+
 function orderText(o) {
   const ref = o.referrer ? store.getUser(o.referrer) : null;
   return (
     `📥 <b>Заявка #${o.id}</b>\n` +
     `👤 ${esc(o.userName)}${o.userUsername ? ' (@' + esc(o.userUsername) + ')' : ''} · <code>${esc(o.userId)}</code>\n` +
     `💵 Сумма: <b>${fmtRub(o.rub)}</b>\n` +
-    `🪙 Валюта: <b>${o.currency}</b> ≈ ${fmtCrypto(o.crypto, o.currency)}\n` +
+    `🪙 Валюта: <b>${esc(dirLabel(o))}</b> ≈ ${cryptoText(o)}\n` +
     `👛 Кошелёк: <code>${esc(o.wallet)}</code>\n` +
     `🧬 Реферер: ${ref ? esc(ref.name) + ' (#' + esc(ref.id) + ')' : '—'}\n` +
     (o.requisites ? `🏦 Реквизиты: ${esc(o.requisites)}\n` : '') +
@@ -154,7 +161,7 @@ async function notifyClient(o) {
 async function notifyClientTx(o) {
   try {
     await bot.api.sendMessage(o.userId,
-      `🔗 <b>Транзакция по заявке #${o.id} отправлена</b>\n\n${esc(o.txUrl)}\n\nПроверьте поступление ${fmtCrypto(o.crypto, o.currency)} на кошелёк:\n<code>${esc(o.wallet)}</code>`,
+      `🔗 <b>Транзакция по заявке #${o.id} отправлена</b>\n\n${esc(o.txUrl)}\n\nПроверьте поступление ${cryptoText(o)} (${esc(dirShort(o))}) на кошелёк:\n<code>${esc(o.wallet)}</code>`,
       { parse_mode: 'HTML' });
     return true;
   } catch (e) {
@@ -265,6 +272,15 @@ async function supportThreadView(ctx, userId, edit = true) {
 
 /* ---------- меню ---------- */
 
+// Курсы всех включённых направлений — одна строка в главном меню.
+function rateLine(s) {
+  return currencies
+    .list()
+    .filter((p) => currencies.isEnabled(s, p.key))
+    .map((p) => `${p.symbol} ${fmtRub(s[p.rateKey] || 0)}`)
+    .join(' · ');
+}
+
 async function mainMenu(ctx, edit = false) {
   const s = store.get().settings;
   const active = store.activeOrders().length;
@@ -281,7 +297,7 @@ async function mainMenu(ctx, edit = false) {
   const text =
     `🌌 <b>VEGA | Official</b> — пульт оператора\n` +
     `${s.online ? '🟢 Обменник <b>ОНЛАЙН</b>' : '🔴 Обменник <b>ОФФЛАЙН</b>'}\n` +
-    `₿ ${fmtRub(s.rateBTC)} · Ł ${fmtRub(s.rateLTC)} (комиссия ${s.feePercent ?? 0}%)\n` +
+    `${rateLine(s)}\n` +
     `Официальный курс ${s.rateUpdatedAt ? 'от ' + fmtDate(s.rateUpdatedAt) + ` (${esc(s.rateSource || '?')})` : 'ещё не подтянут — действуют стартовые курсы'}\n` +
     `Активных заявок: ${active} · 💬 Чатов: ${supportCount}`;
   if (edit) await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb }).catch(() => {});
@@ -299,7 +315,7 @@ async function ordersMenu(ctx, edit = true) {
       : ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
   }
   for (const o of list.slice(0, 8)) {
-    kb.text(`#${o.id} · ${o.currency} · ${fmtRub(o.rub)} · ${o.status === 'new' ? '🔍' : o.status === 'paid' ? '⏳' : '💳'}`, `o:${o.id}`).row();
+    kb.text(`#${o.id} · ${dirShort(o)} · ${fmtRub(o.rub)} · ${o.status === 'new' ? '🔍' : o.status === 'paid' ? '⏳' : '💳'}`, `o:${o.id}`).row();
   }
   kb.text('🔄 Обновить', 'm:orders').text('↩️ Назад', 'm:home');
   const text = '📥 <b>Активные заявки</b> — нажмите, чтобы открыть:';
@@ -308,9 +324,20 @@ async function ordersMenu(ctx, edit = true) {
 }
 
 function settingsKb(s) {
+  const usdt = currencies.get('USDT_TRC20');
+  const errc = currencies.get('USDT_ERC20');
   return new InlineKeyboard()
-    .text(`💰 Комиссия ${s.feePercent ?? 0}%`, 's:fee')
+    .text(`💰 BTC/LTC ${s.feePercent ?? 0}%`, 's:fee')
+    .text(`₮ TRC20 ${s[usdt.feeKey] ?? 0}%`, 's:fee_trc20')
+    .row()
+    .text(`₮ ERC20 ${s[errc.feeKey] ?? 0}%`, 's:fee_erc20')
     .text('🔄 Обновить курс', 's:refresh')
+    .row()
+    .text(`${currencies.isEnabled(s, 'USDT_TRC20') ? '✅' : '⛔'} USDT TRC20`, 's:dir_USDT_TRC20')
+    .text(`${currencies.isEnabled(s, 'USDT_ERC20') ? '✅' : '⛔'} USDT ERC20`, 's:dir_USDT_ERC20')
+    .row()
+    .text('✍️ Курс ₮ TRC20', 's:rate_trc20')
+    .text('✍️ Курс ₮ ERC20', 's:rate_erc20')
     .row()
     .text('⬇️ Мин. сумма', 's:min')
     .text('⬆️ Макс. сумма', 's:max')
@@ -329,14 +356,19 @@ function settingsKb(s) {
 
 function settingsText(s) {
   const base = s.baseRateBTC
-    ? `₿ ${fmtRub(s.baseRateBTC)} · Ł ${fmtRub(s.baseRateLTC)}`
+    ? `₿ ${fmtRub(s.baseRateBTC)} · Ł ${fmtRub(s.baseRateLTC)}` +
+      (s.baseRateUSDT ? ` · ₮ ${s.baseRateUSDT} ₽` : ' · ₮ —')
     : 'ещё не подтянут';
+  const usdt = currencies.get('USDT_TRC20');
+  const errc = currencies.get('USDT_ERC20');
   return (
     `⚙️ <b>Настройки</b> (применяются мгновенно)\n\n` +
     `📊 Официальный курс (авто): <b>${base}</b>\n` +
     (s.rateUpdatedAt ? `Обновлён: ${fmtDate(s.rateUpdatedAt)} (${esc(s.rateSource || '?')})\n` : '') +
-    `💰 Комиссия: <b>${s.feePercent ?? 0}%</b> поверх официального\n` +
-    `💵 Курс для клиентов: <b>₿ ${fmtRub(s.rateBTC)} · Ł ${fmtRub(s.rateLTC)}</b>\n` +
+    `💰 Комиссия: <b>${s.feePercent ?? 0}%</b> BTC/LTC · ` +
+    `<b>${s[usdt.feeKey] ?? 0}%</b> USDT TRC20 · <b>${s[errc.feeKey] ?? 0}%</b> USDT ERC20\n` +
+    `💵 Курс для клиентов: <b>${rateLine(s)}</b>\n` +
+    `🕹 Направления: ${currencies.list().map((p) => `${p.key} ${currencies.isEnabled(s, p.key) ? '✅' : '⛔'}`).join(' · ')}\n` +
     `Лимиты: ${fmtRub(s.minRub)} — ${fmtRub(s.maxRub)}\n` +
     `🎁 Реферальный процент: <b>${s.refPercent}%</b>\n` +
     `Статус: ${s.online ? '🟢 Онлайн' : '🔴 Оффлайн'}\n` +
@@ -382,7 +414,12 @@ async function linksMenu(ctx, edit = true) {
 /* ---------- FSM ввода от админа ---------- */
 
 const SET_FIELDS = {
-  fee: { label: 'комиссию в % поверх официального курса (0–50, например 2)', num: true, key: 'feePercent' },
+  fee: { label: 'комиссию BTC/LTC в % поверх официального курса (0–50, например 2)', num: true, key: 'feePercent' },
+  fee_trc20: { label: 'комиссию USDT TRC20 в % (0–50, например 4)', num: true, key: 'feePercentUSDTTRC20' },
+  fee_erc20: { label: 'комиссию USDT ERC20 в % (0–50, например 5)', num: true, key: 'feePercentUSDTERC20' },
+  // Ручной курс USDT за 1 USDT в рублях — если автообновление недоступно.
+  rate_trc20: { label: 'курс USDT TRC20 в ₽ за 1 USDT (например 100.5)', num: true, key: 'rateUSDTTRC20' },
+  rate_erc20: { label: 'курс USDT ERC20 в ₽ за 1 USDT (например 101.5)', num: true, key: 'rateUSDTERC20' },
   min: { label: 'минимальную сумму обмена (₽)', num: true, key: 'minRub' },
   max: { label: 'максимальную сумму обмена (₽)', num: true, key: 'maxRub' },
   ref: { label: 'реферальный процент (например 1)', num: true, key: 'refPercent' },
@@ -490,7 +527,7 @@ async function handleAdminText(ctx) {
     if (field) {
       if (field.num) {
         const n = parseNum(text);
-        if (f.type === 'set:fee') {
+        if (f.type.startsWith('set:fee')) {
           if (!isFinite(n) || n < 0 || n > 50) return ctx.reply('Комиссия — число от 0 до 50. Пример: 2');
         } else if (!isFinite(n) || n <= 0) {
           return ctx.reply('Нужно положительное число.');
@@ -498,7 +535,8 @@ async function handleAdminText(ctx) {
         store.mutate((db) => {
           db.settings[field.key || f.type.slice(4)] = n;
         });
-        if (f.type === 'set:fee') rates.recomputeWithFee();
+        // Комиссии пересчитывают итоговые курсы; ручной курс USDT применяется как есть.
+        if (f.type.startsWith('set:fee')) rates.recomputeWithFee();
       } else {
         store.mutate((db) => {
           db.settings[field.key || f.type.slice(4)] = text.slice(0, 500);
@@ -567,7 +605,7 @@ function register() {
     if (!isAdmin(ctx)) {
       const url = store.get().settings.publicUrl;
       if (url) {
-        return ctx.reply('🌌 VEGA — обмен BTC и LTC', {
+        return ctx.reply('🌌 VEGA — обмен BTC, LTC и USDT (TRC20/ERC20)', {
           reply_markup: new InlineKeyboard().webApp('Открыть обменник', url),
         });
       }
@@ -606,6 +644,17 @@ function register() {
       return supportReplyPrompt(ctx, userId);
     }
 
+    if (d.startsWith('s:dir_')) {
+      const key = d.slice(6);
+      if (!currencies.get(key)) return;
+      store.mutate((db) => {
+        db.settings.enabled = db.settings.enabled || {};
+        db.settings.enabled[key] = !currencies.isEnabled(db.settings, key);
+      });
+      const st = currencies.isEnabled(store.get().settings, key);
+      await ctx.answerCallbackQuery({ text: `${key}: ${st ? 'включено' : 'выключено'}` }).catch(() => {});
+      return settingsMenu(ctx, true);
+    }
     if (d === 's:online') {
       store.mutate((db) => {
         db.settings.online = !db.settings.online;
@@ -674,7 +723,7 @@ function register() {
         const upd = store.updateOrder(id, { status: 'completed' });
         await sendOrUpdateOrderAdmin(upd);
         await ctx.reply(
-          `📨 <b>Заявка #${id} завершена.</b>\nОтправьте клиенту вручную:\n🪙 <b>${fmtCrypto(upd.crypto, upd.currency)}</b>\n👛 <code>${esc(upd.wallet)}</code>\n\n💡 Теперь вы можете опционально отправить ссылку на блокчейн-транзакцию — нажмите кнопку ниже.`,
+          `📨 <b>Заявка #${id} завершена.</b>\nОтправьте клиенту вручную:\n🪙 <b>${cryptoText(upd)}</b> (${esc(dirShort(upd))})\n👛 <code>${esc(upd.wallet)}</code>\n\n💡 Теперь вы можете опционально отправить ссылку на блокчейн-транзакцию — нажмите кнопку ниже.`,
           { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('🔗 Добавить ссылку на блокчейн', `o:${id}:tx`) }
         );
         return;

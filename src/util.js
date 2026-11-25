@@ -3,10 +3,13 @@ const esc = (s) =>
 
 const fmtRub = (n) => Math.round(Number(n) || 0).toLocaleString('ru-RU') + ' ₽';
 
-const fmtCrypto = (v, cur) => {
+// Точность отображения: BTC/LTC — 8 знаков, USDT — 2 (копейки стейблкоина).
+// dec — желаемое число знаков (например из реестра направлений), если известно.
+const fmtCrypto = (v, cur, dec) => {
   const n = Number(v) || 0;
-  const dec = n >= 1000 ? 2 : n >= 1 ? 4 : 6;
-  return n.toFixed(dec) + ' ' + cur;
+  const d = Number.isFinite(dec) ? Number(dec) : n >= 1000 ? 2 : n >= 1 ? 4 : 6;
+  const s = n.toFixed(d);
+  return d === 0 ? s + ' ' + cur : s.replace(/\.?0+$/, '').replace(/\.$/, '') + ' ' + cur;
 };
 
 const fmtDate = (ts) => {
