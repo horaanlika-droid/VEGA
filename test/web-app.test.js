@@ -362,7 +362,7 @@ test('USDT order sends network and validates the address per network', async (t)
   assert.equal(body.wallet, 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ');
 });
 
-test('disabled direction disappears from the asset sheet without breaking the form', async (t) => {
+test('disabled direction stays visible but dimmed and cannot be selected', async (t) => {
   const a = await usdtApp(t);
   const withoutErc = {
     ...usdtSettings,
@@ -372,12 +372,45 @@ test('disabled direction disappears from the asset sheet without breaking the fo
   // Опрос настроек обновляет шторку направлений, без перезагрузки страницы.
   await a.refresh();
   a.document.querySelector('[data-group="crypto"]').click();
-  const keys = [...a.document.querySelectorAll('#sheetList .sheet-row')].map((b) => b.dataset.key);
-  assert.deepEqual(keys, ['BTC', 'LTC', 'USDT_TRC20']);
+  // Все направления видны — выключенный полупрозрачный и недоступен.
+  const rows = [...a.document.querySelectorAll('#sheetList .sheet-row')];
+  assert.deepEqual(rows.map((b) => b.dataset.key), ['BTC', 'LTC', 'USDT_TRC20', 'USDT_ERC20']);
+  const offRow = a.document.querySelector('.sheet-row[data-key="USDT_ERC20"]');
+  assert.ok(offRow.classList.contains('off'));
+  assert.equal(offRow.getAttribute('aria-disabled'), 'true');
+  assert.match(offRow.textContent, /Временно недоступно/);
+  // Клик по выключенному направлению не выбирает его: шторка не закрывается, форма прежняя.
+  offRow.click();
+  await tick();
+  assert.ok(!a.document.querySelector('#assetSheet').classList.contains('hidden'), 'шторка остаётся открытой');
+  // Доступное направление выбирается как обычно.
+  a.document.querySelector('.sheet-row[data-key="USDT_TRC20"]').click();
+  await tick();
+  assert.ok(a.document.querySelector('#assetForm').classList.contains('hidden') === false);
+  assert.match(a.document.querySelector('#walHint').textContent, /TRC20/);
   // Google Gift Card по-прежнему единственный вид в шторке подарочных карт.
-  a.document.querySelector('#sheetClose').click();
   await pickAssetUi(a, 'GOOGLE_USD');
   assert.ok(!a.document.querySelector('#giftForm').classList.contains('hidden'));
+});
+
+test('fully disabled group stays visible but dimmed and cannot be opened into a form', async (t) => {
+  const a = await usdtApp(t);
+  const noGift = {
+    ...usdtSettings,
+    rates: usdtSettings.rates.map((r) => (r.key === 'GOOGLE_USD' ? { ...r, enabled: false, rate: null } : r)),
+  };
+  a.handle((url) => (url === '/api/settings' ? a.json(noGift) : null));
+  await a.refresh();
+  const giftCard = a.document.querySelector('[data-group="gift"]');
+  assert.ok(giftCard, 'группа карт видна');
+  assert.ok(giftCard.classList.contains('off'), 'группа карт полупрозрачная');
+  // Карточка кликается — открывает шторку с выключенным направлением.
+  giftCard.click();
+  const row = a.document.querySelector('.sheet-row[data-key="GOOGLE_USD"]');
+  assert.ok(row.classList.contains('off'));
+  row.click();
+  await tick();
+  assert.ok(a.document.querySelector('#giftForm').classList.contains('hidden'), 'форма карты не открывается');
 });
 
 test('history shows USDT network and 2-decimal payout', async (t) => {

@@ -286,8 +286,10 @@
   let sheetFrames = [];
   let rulesCloseTimer = null;
   let rulesFrames = [];
+  // Показываем все направления, даже выключенные: их рисуем полупрозрачными,
+  // чтобы клиент видел, что обмен бывает, — но не мог выбрать.
   function sheetRowsFor(kind) {
-    return kind === 'gift' ? sellDirs() : buyDirs();
+    return dirs().filter((d) => (kind === 'gift' ? isGiftDir(d) : !isGiftDir(d)));
   }
   function renderAssetSheet(kind) {
     const rows = sheetRowsFor(kind);
@@ -299,12 +301,14 @@
     list.innerHTML = rows.length
       ? rows
           .map((d) => {
-            const on = d.key === cur.key;
-            const sub =
-              kind === 'gift'
+            const off = !eligible(d);
+            const on = d.key === cur.key && !off;
+            const sub = off
+              ? 'Временно недоступно'
+              : kind === 'gift'
                 ? `1 $ = ${Number(d.rate) || 0} USDT · выплата в USDT`
                 : (d.network ? `Сеть ${d.network} · комиссию назовёт оператор` : 'Стоимость назовёт оператор после заявки');
-            return `<button class="sheet-row${on ? ' on' : ''}" data-key="${esc(d.key)}" role="option" aria-selected="${on ? 'true' : 'false'}">
+            return `<button class="sheet-row${on ? ' on' : ''}${off ? ' off' : ''}" data-key="${esc(d.key)}" role="option" aria-selected="${on ? 'true' : 'false'}"${off ? ' aria-disabled="true"' : ''}>
               <span class="coin-ic ${esc(d.coin)}">${coinInner(d)}</span>
               <span class="sheet-row-text"><b>${esc(d.label)}</b><i>${esc(sub)}</i></span>
               <span class="sheet-check">${ICONS.check}</span>
@@ -318,7 +322,14 @@
       foot.classList.toggle('hidden', !foot.textContent);
     }
     list.querySelectorAll('.sheet-row').forEach((b) =>
-      b.addEventListener('click', () => pickAsset(b.dataset.key))
+      b.addEventListener('click', () => {
+        if (b.classList.contains('off')) {
+          haptic('error');
+          toast('Направление временно недоступно');
+          return;
+        }
+        pickAsset(b.dataset.key);
+      })
     );
   }
   function openAssetSheet(kind) {
@@ -364,14 +375,16 @@
     const lb = $('#chipLabel');
     if (lb) lb.textContent = dir.label;
   }
-  // Курсы/доступность могли измениться, пока форма открыта, — прячем опустевшие группы.
+  // Курсы/доступность могли измениться, пока форма открыта: выключенные группы не прячем —
+  // подсвечиваем полупрозрачными (как и направления внутри шторки), чтобы было видно, что обмен бывает.
   function syncPickerAvailability() {
     const cryptoEmpty = buyDirs().length === 0;
     const giftEmpty = sellDirs().length === 0;
+    const tradingOff = !S.settings.online;
     const c = document.querySelector('[data-group="crypto"]');
-    if (c) c.closest('.picker-group').classList.toggle('hidden', cryptoEmpty);
+    if (c) c.classList.toggle('off', tradingOff || cryptoEmpty);
     const g = document.querySelector('[data-group="gift"]');
-    if (g) g.closest('.picker-group').classList.toggle('hidden', giftEmpty);
+    if (g) g.classList.toggle('off', tradingOff || giftEmpty);
     const empty = $('#pickerEmpty');
     if (empty) empty.classList.toggle('hidden', !(cryptoEmpty && giftEmpty));
     if (S.sheet) renderAssetSheet(S.sheet);
@@ -380,6 +393,11 @@
   function pickAsset(key) {
     const want = dirs().find((d) => d.key === key);
     if (!want) return;
+    if (!eligible(want)) {
+      haptic('error');
+      toast('Направление временно недоступно');
+      return;
+    }
     S.dir = want.key;
     haptic('medium');
     closeAssetSheet();
@@ -418,24 +436,22 @@
             <div class="picker-title">Выбор активов для обмена</div>
             <div class="picker-sub">Выберите, чем торгуем: криптовалюта или подарочная карта — откроется форма обмена.</div>
           </div>
-          ${cryptoOn ? `
           <div class="picker-group">
             <div class="picker-group-label">КРИПТОВАЛЮТА</div>
-            <button class="group-card${S.settings.online ? '' : ' off'}" data-group="crypto">
+            <button class="group-card${(!S.settings.online || !cryptoOn) ? ' off' : ''}" data-group="crypto">
               <span class="coin-ic btc group-ic">₿</span>
               <span class="group-text"><b>Криптовалюта</b><i>BTC · LTC · USDT TRC20 / ERC20</i></span>
               <span class="group-chev">${ICONS.right}</span>
             </button>
-          </div>` : ''}
-          ${giftOn ? `
+          </div>
           <div class="picker-group">
             <div class="picker-group-label">ПОДАРОЧНЫЕ КАРТЫ</div>
-            <button class="group-card${S.settings.online ? '' : ' off'}" data-group="gift">
+            <button class="group-card${(!S.settings.online || !giftOn) ? ' off' : ''}" data-group="gift">
               <span class="coin-ic google group-ic">${GIFT_ICON}</span>
               <span class="group-text"><b>Подарочные карты</b><i>Google Gift Card — выплата в USDT</i></span>
               <span class="group-chev">${ICONS.right}</span>
             </button>
-          </div>` : ''}
+          </div>
           <div class="picker-empty${cryptoOn || giftOn ? ' hidden' : ''}" id="pickerEmpty">Направления временно недоступны.<br>Загляните чуть позже.</div>
         </div>
         <div id="assetForm" class="hidden">

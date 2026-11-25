@@ -513,6 +513,10 @@ input[readonly] { color: #9fe8d6 !important; }
 .sheet-check { margin-left: auto; color: var(--teal); display: flex; flex: none; opacity: 0; }
 .sheet-row.on .sheet-check { opacity: 1; }
 .sheet-empty { padding: 26px 12px; text-align: center; font-size: 12.5px; color: var(--mut); }
+/* Выключенный оператором актив: полупрозрачный, в ч/б, выбрать нельзя */
+.sheet-row.off { opacity: .45; filter: grayscale(1); cursor: default; }
+.sheet-row.off:active { background: transparent; }
+.sheet-row.off .sheet-check { display: none; }
 .sheet-foot { margin-top: 12px; padding: 9px 12px; text-align: center; font-size: 10.5px; line-height: 1.5; color: var(--mut); border: 1px dashed var(--line); border-radius: 12px; }
 body.sheet-lock { overflow: hidden; }
 
@@ -624,6 +628,6 @@ body.sheet-lock { overflow: hidden; }
 #adminSheet:not(.trading-on) .adm-toggle.on { border-color: var(--line); box-shadow: none; }
 
 /* Клиент: плитки направлений чёрно-белые, когда торги закрыты */
-.group-card.off { filter: grayscale(1) brightness(.68); }
+.group-card.off { filter: grayscale(1) brightness(.68); opacity: .55; }
 .group-card.off .group-chev { color: var(--mut); }
 .group-card:not(.off) { box-shadow: 0 0 0 1px rgba(23, 233, 192, 0.3), 0 10px 34px rgba(0, 0, 0, 0.35); }
