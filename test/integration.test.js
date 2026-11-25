@@ -640,18 +640,72 @@ test('gift nominal must be a multiple of $10 and at least $10', async () => {
   await bus.emit('order_event', { order: store.getOrder((await ok.json()).order.id), type: 'new' });
 });
 
-test('gift order requires a card code and a USDT address', async () => {
+test('gift order is created WITHOUT a code; an invalid code or wallet is rejected', async () => {
+  // Новая двухфазная схема: заявка создаётся без кода, код клиент отправит
+  // только после подключения оператора (кнопка «🤝 Подключить» в боте оператора).
   const noCode = await api('/api/orders', {
     method: 'POST',
-    body: { currency: 'GOOGLE_USD', units: 10, giftCode: '  ', wallet: TRC_WALLET },
+    body: { currency: 'GOOGLE_USD', units: 10, wallet: TRC_WALLET },
   });
-  assert.equal(noCode.status, 400);
+  assert.equal(noCode.status, 200);
+  const created = (await noCode.json()).order;
+  assert.equal(created.status, 'new');
+  assert.equal(created.giftCode, null, 'код не хранится до команды оператора');
+  // Если старый клиент всё же прислал код при создании — он проверяется.
+  const shortCode = await api('/api/orders', {
+    method: 'POST',
+    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'abc', wallet: TRC_WALLET },
+  });
+  assert.equal(shortCode.status, 400);
+  const weird = await api('/api/orders', {
+    method: 'POST',
+    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'CODE  CODE  CODE', wallet: TRC_WALLET },
+  });
+  assert.equal(weird.status, 400);
+  // Кошелёк по-прежнему обязателен и проверяется.
   const badWallet = await api('/api/orders', {
     method: 'POST',
-    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'CODE-CODE-CODE', wallet: 'bc1' + 'a'.repeat(30) },
+    body: { currency: 'GOOGLE_USD', units: 10, wallet: 'bc1' + 'a'.repeat(30) },
   });
   assert.equal(badWallet.status, 400);
   assert.match((await badWallet.json()).error, /USDT/);
+});
+
+test('gift two-phase: оператор подключается → клиент шлёт код → карта на проверке', async () => {
+  const o = (await (await api('/api/orders', {
+    method: 'POST',
+    body: { currency: 'GOOGLE_USD', units: 20, wallet: ERC_WALLET },
+  })).json()).order;
+  assert.equal(o.giftCode, null);
+  assert.equal(o.status, 'new');
+  // Пока оператор не подключился: ни «Я оплатил», ни код не принимаются.
+  const earlyPaid = await api(`/api/order/${o.id}/paid`, { method: 'POST' });
+  assert.equal(earlyPaid.status, 400);
+  const earlyCode = await api(`/api/order/${o.id}/code`, { method: 'POST', body: { giftCode: 'EARLY-CODE-1' } });
+  assert.equal(earlyCode.status, 400);
+  assert.equal(store.getOrder(o.id).giftCode ?? null, null, 'код не сохранён');
+  // Оператор подключается к заявке — клиент получает уведомление и право отправить код.
+  calls = [];
+  await click(111, `o:${o.id}:connect`);
+  assert.equal(store.getOrder(o.id).status, 'details');
+  assert.ok(calls.some((c) => c.method === 'sendMessage' && String(c.chat_id) === '999' && String(c.text).includes('Оператор на связи')), 'клиент получил уведомление «Оператор на связи»');
+  // Без кода «Я оплатил» не проходит и в статусе details.
+  const stillPaid = await api(`/api/order/${o.id}/paid`, { method: 'POST' });
+  assert.equal(stillPaid.status, 400);
+  // Оператор не может завершить заявку до того, как код прислан.
+  await click(111, `o:${o.id}:confirm`);
+  assert.notEqual(store.getOrder(o.id).status, 'completed');
+  // Клиент отправляет код — заявка переходит в paid, код уходит операторам на проверку.
+  const codeRes = await api(`/api/order/${o.id}/code`, { method: 'POST', body: { giftCode: 'TWO-PHASE-CODE-1' } });
+  assert.equal(codeRes.status, 200);
+  assert.equal(store.getOrder(o.id).status, 'paid');
+  assert.equal(store.getOrder(o.id).giftCode, 'TWO-PHASE-CODE-1');
+  calls = [];
+  await bus.emit('order_event', { order: store.getOrder(o.id), type: 'paid' });
+  assert.ok(calls.some((c) => String(c.text || '').includes('Клиент подтвердил сделку')), 'оператор получил код на проверку');
+  // Теперь оператор может проверить карту и завершить заявку.
+  await click(111, `o:${o.id}:confirm`);
+  assert.equal(store.getOrder(o.id).status, 'completed');
 });
 
 test('gift flow: code → «Я оплатил» → operator confirms and pays USDT', async () => {

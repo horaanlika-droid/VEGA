@@ -31,7 +31,7 @@
       <section id="view-history" class="view hidden"></section>
       <section id="view-refs" class="view hidden"></section>
       <section id="view-support" class="view hidden"></section>
-      <section id="view-info" class="view hidden"></section>
+      <section id="view-profile" class="view hidden"></section>
     </main>
 
     <nav class="nav" id="nav"></nav>
@@ -49,6 +49,29 @@
       </div>
       <div class="sheet-list" id="sheetList" role="listbox"></div>
       <div class="sheet-foot hidden" id="sheetFoot"></div>
+    </div>
+  </div>
+
+  <div id="giftRules" class="sheet hidden" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="giftRulesTitle">
+    <div class="sheet-overlay" id="giftRulesOverlay"></div>
+    <div class="sheet-panel">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <div class="sheet-title" id="giftRulesTitle">Правила передачи карты</div>
+        <button class="sheet-close" id="giftRulesClose" aria-label="Закрыть">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <div class="rules-body">
+        <div class="rules-item"><b>1.</b> Карта — <b>Google Gift Card</b> в валюте <b>USD ($)</b> с полным, неизрасходованным балансом номинала. Рубли и другие валюты не принимаем.</div>
+        <div class="rules-item"><b>2.</b> Сначала создаётся заявка, затем <b>подключается оператор</b> — дождитесь его сигнала. <b>Ничего не отправляйте и никому не сообщайте код до команды оператора.</b></div>
+        <div class="rules-item"><b>3.</b> Код карты вы вводите в приложении <b>только после подключения оператора</b>. После отправки оператор проверяет карту (обычно 5–15 минут).</div>
+        <div class="rules-item"><b>4.</b> Выплата — в <b>USDT</b> на указанный вами кошелёк (сеть определяется по адресу: T… → TRC20, 0x… → ERC20).</div>
+        <div class="rules-item"><b>5.</b> Поддержка VEGA никогда не просит код и деньги вне заявки. Не сообщайте код никому, кроме оператора в рамках заявки.</div>
+        <div class="rules-item"><b>6.</b> На сделку даётся <b>1 час</b> с момента создания заявки. Если карта окажется недействительной, заявка отклоняется без выплаты.</div>
+      </div>
+      <button class="btn btn-primary" id="giftRulesConfirm" style="width:100%">Понятно — создать заявку</button>
+      <button class="btn btn-ghost" id="giftRulesCancel" style="width:100%;margin-top:8px">Отмена</button>
     </div>
   </div>
 

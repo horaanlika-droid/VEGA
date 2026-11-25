@@ -140,10 +140,18 @@ test('gift flow end-to-end: menu → exchange → Google Gift Card → paid → 
   await click(client, 'c:buy:GOOGLE_USD');
   screen = lastCall('editMessageText');
   assert.ok(String(screen.text).includes('Google Gift Card'));
+  assert.ok(String(screen.text).includes('Правила передачи карты'), 'первым открывается диалог с правилами');
   assert.ok(String(screen.text).includes('Минимальный цифровой след'), 'цифровой след упомянут в карточке подарка');
+  assert.ok(String(screen.text).includes('Ничего не отправляйте'));
 
+  // Правила → номинал. Код при создании заявки НЕ спрашивают.
+  await click(client, 'c:giftnom');
+  screen = lastCall('editMessageText');
+  assert.ok(markupCallbacks(screen).includes('c:units:10'));
   await click(client, 'c:units:10');
-  await text(client, 'XXXX-YYYY-ZZZZ-0001');
+  const askWallet = lastCall('editMessageText');
+  assert.match(String(askWallet.text), /кошельк/i, 'после номинала спрашивают только кошелёк');
+  assert.ok(!String(askWallet.text).includes('Код карты'), 'код до создания заявки не запрашивают');
   // TRC20-адрес (T + 33 символа base58).
   await text(client, 'T' + 'a'.repeat(33));
   const created = store.get().orders.find((o) => String(o.userId) === String(client));
@@ -153,10 +161,22 @@ test('gift flow end-to-end: menu → exchange → Google Gift Card → paid → 
   assert.equal(created.currency, 'GOOGLE_USD');
   assert.equal(created.crypto, 10, 'комиссия 0% → 1 USDT за 1 $');
   assert.equal(created.network, 'TRC20');
+  assert.equal(created.giftCode ?? null, null, 'заявка без кода — код только после подключения оператора');
+  assert.equal(created.status, 'new');
 
-  // Клиент подтверждает, что отдаёт карту.
-  await click(client, `c:paid:${created.id}`);
+  // До подключения оператора код отправить нельзя.
+  await click(client, `c:sendcode:${created.id}`);
+  assert.match(String(lastCall('editMessageText').text), /после подключения оператора/i);
+  assert.equal(store.getOrder(created.id).status, 'new');
+  assert.equal(store.getOrder(created.id).giftCode ?? null, null);
+
+  // Оператор подключается (в проде — кнопка «🤝 Подключить» в боте оператора).
+  store.updateOrder(created.id, { status: 'details' });
+  await click(client, `c:sendcode:${created.id}`);
+  assert.match(String(lastCall('editMessageText').text), /Оператор в заявке/);
+  await text(client, 'XXXX-YYYY-ZZZZ-0001');
   assert.equal(store.getOrder(created.id).status, 'paid');
+  assert.equal(store.getOrder(created.id).giftCode, 'XXXX-YYYY-ZZZZ-0001');
   // Оператору улетело уведомление с кодом.
   assert.ok(calls.some((c) => c.method === 'sendMessage' && String(c.chat_id) === '111' && String(c.text).includes(`#${created.id}`)));
 });
@@ -173,8 +193,8 @@ test('widget send is attempted when WIDGETS=1 and falls back to text on Telegram
   await text(client, '/start');
   await click(client, 'c:exchange');
   await click(client, 'c:buy:GOOGLE_USD');
+  await click(client, 'c:giftnom');
   await click(client, 'c:units:10');
-  await text(client, 'XXXX-YYYY-ZZZZ-0002');
   await text(client, 'T' + 'b'.repeat(33));
   const order = store.get().orders.find((o) => String(o.userId) === String(client));
   assert.ok(order);
@@ -218,11 +238,14 @@ test('widget_query is answered and message state refreshed via editMessageWidget
   await text(client, '/start');
   await click(client, 'c:exchange');
   await click(client, 'c:buy:GOOGLE_USD');
+  await click(client, 'c:giftnom');
   await click(client, 'c:units:10');
-  await text(client, 'XXXX-YYYY-ZZZZ-0003');
   await text(client, 'T' + 'c'.repeat(33));
   const order = store.get().orders.find((o) => String(o.userId) === String(client));
   assert.ok(order);
+  // «Я оплатил» в виджете работает для заявки с кодом (совместимость со старыми клиентами):
+  // в двухфазной схеме без кода кнопка оплаты не показывается и тап отклоняется.
+  store.updateOrder(order.id, { giftCode: 'WQ-CODE-0003' });
 
   const widgetCalls = [];
   widget.__setFetch(async (url, opts) => {
@@ -260,8 +283,8 @@ test('widget «paid» is rejected for someone else’s order', async () => {
   await text(owner, '/start');
   await click(owner, 'c:exchange');
   await click(owner, 'c:buy:GOOGLE_USD');
+  await click(owner, 'c:giftnom');
   await click(owner, 'c:units:10');
-  await text(owner, 'XXXX-YYYY-ZZZZ-0004');
   await text(owner, 'T' + 'd'.repeat(33));
   const order = store.get().orders.find((o) => String(o.userId) === String(owner));
 

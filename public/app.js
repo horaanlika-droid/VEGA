@@ -33,7 +33,7 @@
   // dir — выбранное направление (ключ из /api/settings → rates[]).
   // screen — на каком под-экране обмена мы находимся: «picker» (выбор активов) или «form» (форма обмена).
   // sheet — какая шторка открыта (crypto | gift) или null.
-  const S = { settings: null, me: null, orders: [], order: null, tab: 'exchange', dir: 'BTC', isDemo: false, calcFrom: 'rub', support: [], mode: 'buy', screen: 'picker', sheet: null };
+  const S = { settings: null, me: null, orders: [], order: null, tab: 'exchange', dir: 'BTC', isDemo: false, calcFrom: 'rub', support: [], mode: 'buy', screen: 'picker', sheet: null, giftRules: false };
 
   // Резервный реестр направлений: нужен, если сервер старой версии не прислал rates.
   const FALLBACK_DIRS = [
@@ -233,8 +233,8 @@
     swap: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>',
     clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
     users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.4 3.4-5 6.5-5s5.7 1.6 6.5 5"/><circle cx="17" cy="9" r="2.6"/><path d="M16.5 15.2c2.6.3 4.4 1.8 5 4.8"/></svg>',
-    info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></svg>',
-    chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.5 7.5L3 21l2-5.5A8.5 8.5 0 0 1 21 11.5Z"/><path d="M8 12h8"/><path d="M8 8h5"/></svg>',
+    user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.6"/><path d="M5 20c.8-3.6 3.6-5.6 7-5.6s6.2 2 7 5.6"/></svg>',
+    chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="10.5" r="4.2"/><path d="M4.5 21c.9-3.8 4-5.8 7.5-5.8s6.6 2 7.5 5.8"/><path d="M6.8 10.6a5.2 5.2 0 0 1 10.4 0"/><path d="M17.2 10.6v2a1.6 1.6 0 0 1-1.6 1.6h-1.6"/></svg>',
     down: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16"/><path d="m6 14 6 6 6-6"/></svg>',
     copy: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
     check: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 12.5 5 5 10-11"/></svg>',
@@ -267,7 +267,7 @@
       ['history', 'История', ICONS.clock],
       ['refs', 'Рефералы', ICONS.users],
       ['support', 'Чат', ICONS.chat],
-      ['info', 'Инфо', ICONS.info],
+      ['profile', 'ЛК', ICONS.user],
     ];
     $('#nav').innerHTML = items
       .map(([id, l, ic]) => `<button data-tab="${id}" class="${S.tab === id ? 'on' : ''}">${ic}<span>${l}</span>${id==='support' && S.support.length ? `<span class="badge">${S.support.length>99?'99+':S.support.length}</span>` : ''}</button>`)
@@ -282,7 +282,7 @@
         renderNav();
         if (S.tab === 'history') renderHistory();
         if (S.tab === 'refs') renderRefs();
-        if (S.tab === 'info') renderInfo();
+        if (S.tab === 'profile') renderProfile();
         if (S.tab === 'support') renderSupport();
         syncTgBack();
       })
@@ -295,6 +295,8 @@
   // Пока принимаем только один вид карт — Google Gift Card.
   let sheetCloseTimer = null;
   let sheetFrames = [];
+  let rulesCloseTimer = null;
+  let rulesFrames = [];
   function sheetRowsFor(kind) {
     return kind === 'gift' ? sellDirs() : buyDirs();
   }
@@ -402,11 +404,12 @@
   function syncTgBack() {
     try {
       if (!tg || !tg.BackButton) return;
-      const need = S.tab === 'exchange' && !S.order && (S.screen === 'form' || !!S.sheet);
+      const need = S.tab === 'exchange' && !S.order && (S.screen === 'form' || !!S.sheet || !!S.giftRules);
       if (need) tg.BackButton.show(); else tg.BackButton.hide();
     } catch (e) { /* не-Telegram окружение */ }
   }
   function onTgBackButton() {
+    if (S.giftRules) { giftRulesClose(); return; }
     if (S.sheet) { closeAssetSheet(); return; }
     if (S.tab === 'exchange' && S.screen === 'form') goToAssetPicker();
   }
@@ -485,19 +488,13 @@
             <div class="f-label"><span>Вы получаете</span><span id="giftLimits"></span></div>
             <div class="f-box"><div class="coin-ic usdt">₮</div><input id="outUsdt" type="text" readonly placeholder="—"></div>
             <div class="f-meta" id="giftMeta"></div>
-            <div class="info-note" style="margin-top:10px">⏱ На сделку даётся <b>1 час</b>: пришлите код, нажмите «Я оплатил» — оператор проверит карту и выплатит USDT.</div>
+            <div class="info-note" style="margin-top:10px">⏱ На сделку даётся <b>1 час</b>: создайте заявку → <b>дождитесь подключения оператора</b> → отправьте код <b>только после его команды</b> — оператор проверит карту и выплатит USDT.</div>
           </div>
           <div class="card">
             <div class="card-title">Где взять карту</div>
             <div class="info-note" id="giftInfo">Карту можно купить на любом маркетплейсе — Яндекс Маркет, Ozon, Wildberries и т. д. Выбирайте карту именно в <b>USD</b> (долларах): карты в рублях и других валютах не принимаются.</div>
             <div class="info-warn">⚠️ Проверьте валюту карты: нужен номинал в <b>USD ($)</b>.</div>
             <div class="info-note" style="margin-top:10px">🛡 <b>Минимальный цифровой след</b><br>Карту можно купить за <b>наличные</b> — она не привязана к вашему банковскому счёту и паспорту. Мы не запрашиваем документы и регистрацию: только код карты и USDT-адрес. Выплата идёт прямо на ваш кошелёк — без банков, бирж и посредников. Меньше точек, где фиксируются ваши данные, — меньше цифрового следа.</div>
-          </div>
-          <div class="card">
-            <div class="card-title">Код карты</div>
-            <div class="f-box"><div class="coin-ic google">${GIFT_ICON}</div><input id="inGiftCode" placeholder="Например: XXXX-XXXX-XXXX-XXXX" autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off"></div>
-            <div class="f-hint">Код видит только оператор — он проверит карту и выплатит USDT</div>
-            <div class="f-err" id="giftCodeErr"></div>
           </div>
           <div class="card">
             <div class="card-title">Кошелёк для выплаты USDT</div>
@@ -553,10 +550,6 @@
         renderFormMeta();
       });
       $('#inUsdtWallet').addEventListener('input', renderFormMeta);
-      $('#inGiftCode').addEventListener('input', () => {
-        const e = $('#giftCodeErr');
-        if (e) e.textContent = '';
-      });
       $('#btnSell').addEventListener('click', submitGiftOrder);
     }
     setScreen(S.screen || 'picker');
@@ -685,45 +678,85 @@
     }
   }
 
-  async function submitGiftOrder() {
+  function giftRulesOpen() {
+    const dlg = $('#giftRules');
+    if (!dlg) return;
+    if (rulesCloseTimer) { clearTimeout(rulesCloseTimer); rulesCloseTimer = null; }
+    dlg.classList.remove('hidden');
+    dlg.setAttribute('aria-hidden', 'false');
+    rulesFrames = [requestAnimationFrame(() => { rulesFrames[1] = requestAnimationFrame(() => dlg.classList.add('open')); })];
+    document.body.classList.add('sheet-lock');
+    S.giftRules = true;
+    syncTgBack();
+  }
+  function giftRulesClose() {
+    const dlg = $('#giftRules');
+    S.giftRules = false;
+    document.body.classList.remove('sheet-lock');
+    rulesFrames.forEach((f) => { try { cancelAnimationFrame(f); } catch (e) {} });
+    rulesFrames = [];
+    if (!dlg) { syncTgBack(); return; }
+    if (dlg.classList.contains('hidden')) { syncTgBack(); return; }
+    dlg.classList.remove('open');
+    dlg.setAttribute('aria-hidden', 'true');
+    if (rulesCloseTimer) clearTimeout(rulesCloseTimer);
+    rulesCloseTimer = setTimeout(() => dlg.classList.add('hidden'), 320);
+    syncTgBack();
+  }
+  // Проверка формы подарочной карты; при успехе открывает диалог с правилами.
+  function submitGiftOrder() {
     const s = S.settings;
     const err = $('#giftErr');
-    const codeErr = $('#giftCodeErr');
     err.textContent = '';
-    codeErr.textContent = '';
     const dir = isGiftDir(currentDir()) ? currentDir() : currentSellDir();
     const step = Number(dir && dir.step) || 10;
     const minUnits = Number(dir && dir.minUnits) || step;
     const units = Math.floor((Number($('#inUnits').value) || 0) / step) * step;
-    const giftCode = ($('#inGiftCode').value || '').trim();
     const wallet = ($('#inUsdtWallet').value || '').trim();
     const network = usdtNetworkOf(wallet);
     if (!s.online) return (err.textContent = '⛔ Обмен временно недоступен — загляните позже.');
     if (!(Number(dir.rate) > 0)) return (err.textContent = 'Продажа карт сейчас недоступна.');
     if (!units || units < minUnits) return (err.textContent = `Минимальный номинал — $${minUnits}, сумма кратна $${step}.`);
-    if (giftCode.length < 8) return (codeErr.textContent = 'Введите полный код карты (не менее 8 символов).');
     if (!network) return (err.textContent = 'Укажите адрес USDT: TRC20 начинается с T, ERC20 — с 0x (40 hex).');
     const payout = giftPayout(units, network);
     if (!(payout > 0)) return (err.textContent = 'Не удалось рассчитать выплату — проверьте адрес и номинал.');
-    const btn = $('#btnSell');
+    haptic('medium');
+    giftRulesOpen();
+  }
+
+  // Создание заявки — только после подтверждения правил в диалоге.
+  async function createGiftOrder() {
+    const s = S.settings;
+    const err = $('#giftErr');
+    const dir = isGiftDir(currentDir()) ? currentDir() : currentSellDir();
+    const step = Number(dir && dir.step) || 10;
+    const minUnits = Number(dir && dir.minUnits) || step;
+    const units = Math.floor((Number($('#inUnits').value) || 0) / step) * step;
+    const wallet = ($('#inUsdtWallet').value || '').trim();
+    const network = usdtNetworkOf(wallet);
+    if (!s.online || !dir) return;
+    const btn = $('#giftRulesConfirm');
     btn.disabled = true;
     haptic('medium');
     try {
       const r = await api('/api/orders', {
         method: 'POST',
-        body: { units, giftCode, wallet, currency: 'GOOGLE_USD', startParam },
+        body: { units, wallet, currency: 'GOOGLE_USD', startParam },
       });
       S.order = r.order;
       S.orders.unshift(r.order);
       haptic('heavy');
+      giftRulesClose();
       $('#exForm').classList.add('hidden');
       $('#exOrder').classList.remove('hidden');
       renderOrderStage();
-      toast('Код принят — нажмите «Я оплатил»');
+      toast('Заявка создана — дождитесь подключения оператора');
     } catch (e) {
-      err.textContent = e.message;
+      if (err) err.textContent = e.message;
       toast(e.message);
+      giftRulesClose();
     } finally {
+      btn.disabled = false;
       renderGiftMeta();
     }
   }
@@ -772,9 +805,10 @@
     }
   }
 
-  function chip(st) {
+  function chip(st, label) {
     const m = STATUS[st] || { label: st, color: '#8aa0b8' };
-    return `<span class="chip" style="color:${m.color};background:${m.color}1a;border:1px solid ${m.color}55">${m.label}</span>`;
+    const text = label || m.label;
+    return `<span class="chip" style="color:${m.color};background:${m.color}1a;border:1px solid ${m.color}55">${text}</span>`;
   }
 
   // Гифт-заявка: клиент отдал код карты и ждёт выплату USDT.
@@ -797,15 +831,15 @@
   function renderGiftStage(o) {
     const box = $('#exOrder');
     const payout = `${fmtCrypto(o.crypto, 'USDT', 2)} (${o.network || 'USDT'})`;
-    if (o.status === 'new') {
-      // Клиент прислал код → подтверждает оплату → оператор проверяет карту.
+    if (o.status === 'new' && o.giftCode) {
+      // Совместимость со старыми заявками, где код был указан при создании.
       box.innerHTML = `
         <div class="card stage">
           ${chip('details')}
           <div class="pay-dir">${ICONS.swap}<span>Google Gift Card <b>$${giftNominal(o)}</b> → ${payout}</span></div>
           <div class="stage-title">Подтвердите передачу карты</div>
           <div class="stage-sub">Заявка <b>#${o.id}</b>. Проверьте код — он уйдёт оператору, как только вы нажмёте «Я оплатил».</div>
-          <div class="req-box" id="giftCodeBox">Код карты: ${esc(o.giftCode || '—')}</div>
+          <div class="req-box" id="giftCodeBox">Код карты: ${esc(o.giftCode)}</div>
           <div class="copy-row">
             <button class="btn btn-ghost btn-sm" id="cpGift">${ICONS.copy}<span>Копировать код</span></button>
           </div>
@@ -826,7 +860,63 @@
       $('#btnCancel').addEventListener('click', async () => { haptic('light'); await changeOrder(o, 'cancel'); });
       return true;
     }
-    if (o.status === 'paid') {
+    if (o.status === 'new') {
+      // Двухфазная сделка: ждём, пока оператор подключится к заявке.
+      box.innerHTML = `
+        <div class="card stage">
+          <div class="spinner-wrap"><div class="spinner"></div><div class="spinner-ic">🤝</div></div>
+          ${chip('new', 'Ожидаем оператора')}
+          <div class="pay-dir">${ICONS.swap}<span>Google Gift Card <b>$${giftNominal(o)}</b> → ${payout}</span></div>
+          <div class="stage-title">Ожидаем подключения оператора</div>
+          <div class="stage-sub">Заявка <b>#${o.id}</b> передана оператору.<br>Обычно это занимает несколько минут — <b>не закрывайте приложение</b>.</div>
+          <div class="note">${ttlText(o)}<br><b>Ничего не отправляйте и никому не сообщайте код карты</b>, пока оператор не подключится к заявке и не попросит его.</div>
+          <button class="btn btn-ghost" style="margin-top:14px" id="btnCancel">Отменить заявку</button>
+        </div>`;
+      $('#btnCancel').addEventListener('click', async () => { haptic('light'); await changeOrder(o, 'cancel'); });
+      return true;
+    }
+    if (o.status === 'details' && !o.giftCode) {
+      // Оператор подключился — теперь можно отправить код карты.
+      box.innerHTML = `
+        <div class="card stage">
+          ${chip('details', 'Оператор на связи')}
+          <div class="pay-dir">${ICONS.swap}<span>Google Gift Card <b>$${giftNominal(o)}</b> → ${payout}</span></div>
+          <div class="stage-title">Оператор на связи</div>
+          <div class="stage-sub">Оператор подключился к заявке <b>#${o.id}</b> и ждёт код карты.<br>Введите код Google Gift Card номиналом <b>$${giftNominal(o)}</b>:</div>
+          <div class="f-box" style="margin-top:12px"><div class="coin-ic google">${GIFT_ICON}</div><input id="inGiftSendCode" placeholder="Например: XXXX-XXXX-XXXX-XXXX" autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+          <div class="f-err" id="giftSendErr"></div>
+          <div class="note">${ttlText(o)}<br>Код увидит только оператор. Не сообщайте его больше никому — ни в поддержке, ни в личных сообщениях.</div>
+          <button class="btn btn-primary" style="margin-top:14px" id="btnGiftSend">${ICONS.check}<span>Отправить код оператору</span></button>
+          <button class="btn btn-ghost" style="margin-top:8px" id="btnCancel">Отменить заявку</button>
+        </div>`;
+      const input = $('#inGiftSendCode');
+      const errEl = $('#giftSendErr');
+      input.addEventListener('input', () => { errEl.textContent = ''; });
+      $('#btnGiftSend').addEventListener('click', async () => {
+        const code = (input.value || '').trim();
+        errEl.textContent = '';
+        if (code.length < 8) { errEl.textContent = 'Введите полный код карты (не менее 8 символов).'; return; }
+        const btn = $('#btnGiftSend');
+        btn.disabled = true;
+        haptic('medium');
+        try {
+          const r = await api(`/api/order/${o.id}/code`, { method: 'POST', body: { giftCode: code } });
+          S.order = r.order;
+          const i = S.orders.findIndex((x) => x.id === r.order.id);
+          if (i >= 0) S.orders[i] = r.order; else S.orders.unshift(r.order);
+          haptic('heavy');
+          toast('Код отправлен оператору ✅');
+          renderOrderStage();
+        } catch (e) {
+          errEl.textContent = e.message;
+          toast(e.message);
+          btn.disabled = false;
+        }
+      });
+      $('#btnCancel').addEventListener('click', async () => { haptic('light'); await changeOrder(o, 'cancel'); });
+      return true;
+    }
+    if (o.status === 'paid' || (o.status === 'details' && o.giftCode)) {
       box.innerHTML = `
         <div class="card stage">
           <div class="spinner-wrap"><div class="spinner"></div><div class="spinner-ic">🔎</div></div>
@@ -869,7 +959,16 @@
       $('#btnNew').addEventListener('click', resetToForm);
       return true;
     }
-    return false;
+    // Страховка: подарочная заявка не должна попасть в обычный «куплю крипту» сценарий.
+    box.innerHTML = `
+      <div class="card stage">
+        <div class="spinner-wrap"><div class="spinner"></div><div class="spinner-ic">🎁</div></div>
+        <div class="stage-title">Заявка #${o.id} обрабатывается</div>
+        <div class="stage-sub">Дождитесь оператора или обновите экран.</div>
+        <button class="btn btn-ghost" style="margin-top:14px" id="btnCancel">Отменить заявку</button>
+      </div>`;
+    $('#btnCancel').addEventListener('click', async () => { haptic('light'); await changeOrder(o, 'cancel'); });
+    return true;
   }
 
   function renderOrderStage() {
@@ -1155,18 +1254,39 @@
     if (cp) cp.addEventListener('click', () => copyText(link, 'Ссылка скопирована'));
   }
 
-  function renderInfo() {
+  function renderProfile() {
     const s = S.settings;
+    const v = $('#view-profile');
+    const me = S.me || {};
+    const name = me.name || 'Клиент';
+    const letter = (String(name).trim()[0] || 'V').toUpperCase();
+    const userLine = [me.username ? '@' + me.username : null, 'ID ' + (me.id ?? '—')].filter(Boolean).join(' · ');
+    const doneOrders = S.orders.filter((o) => o.status === 'completed');
+    const volume = doneOrders.reduce((sum, o) => sum + Number(o.payRub || o.rub || 0), 0);
     const opLink = 'https://t.me/' + String(s.operator || '').replace(/^@/, '');
-    $('#view-info').innerHTML = `
-      <div class="card">
-        <div class="about"><b>VEGA</b> — современный сервис обмена Bitcoin, Litecoin и USDT (TRC20/ERC20). Честность, скорость и выгодные условия: мы создали сервис, которым удобно пользоваться каждый день.</div>
-        <div class="feat">
-          <div class="f"><span class="i">✅</span>Выгодный курс — максимум за каждый обмен</div>
-          <div class="f"><span class="i">✅</span>Фиксированная сумма к оплате — известна заранее, без доплат</div>
-          <div class="f"><span class="i">✅</span>Быстрые сделки и живая поддержка оператора</div>
-          <div class="f"><span class="i">✅</span>Безопасность каждой операции</div>
+    const link = s.botUsername ? `https://t.me/${s.botUsername}?startapp=ref${me.id}` : null;
+    v.innerHTML = `
+      <div class="card lc-head">
+        <div class="lc-avatar">${esc(letter)}</div>
+        <div class="lc-id">
+          <div class="lc-name">${esc(name)}</div>
+          <div class="lc-sub">${esc(userLine)}</div>
+          <div class="lc-note">${s.online ? '🟢 Обменник онлайн' : '🔴 Обменник офлайн'}</div>
         </div>
+      </div>
+      <div class="lc-stats">
+        <div class="lc-stat"><b>${S.orders.length}</b><span>заявок всего</span></div>
+        <div class="lc-stat"><b>${doneOrders.length}</b><span>завершено</span></div>
+        <div class="lc-stat"><b>${fmtRub(volume)}</b><span>объём обменов</span></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Реферальная программа</div>
+        <div class="about" style="font-size:12.5px;line-height:1.6"><b>${s.refPercent}%</b> с каждого обмена друга — без лимитов. Приглашено: <b>${me.referredCount || 0}</b></div>
+        ${link ? `<div class="ref-link" id="lcRefLink" style="margin-top:10px">${esc(link)}</div>
+        <div class="copy-row">
+          <button class="btn btn-ghost btn-sm" id="lcCopyRef">${ICONS.copy}<span>Копировать ссылку</span></button>
+          <button class="btn btn-ghost btn-sm" id="lcGoRefs">${ICONS.right}<span>Как это работает</span></button>
+        </div>` : ''}
       </div>
       <div class="card">
         <div class="card-title">Связь с нами</div>
@@ -1175,21 +1295,29 @@
           <a class="contact" href="${esc(s.channel)}" target="_blank" rel="noopener"><span class="ci">📣</span><span>Официальный канал<small>новости и курсы</small></span></a>
           <a class="contact" href="${esc(s.chat)}" target="_blank" rel="noopener"><span class="ci">💬</span><span>Чат поддержки<small>отвечаем быстро</small></span></a>
         </div>
-      </div>
-      <div class="card">
-        <div class="card-title">Поддержка в приложении</div>
-        <div class="about" style="font-size:12.5px;line-height:1.6">Напишите нам прямо здесь — отвечаем в реальном времени. Перейдите во вкладку <b>Чат</b> в нижнем меню.</div>
         <button class="btn btn-ghost" style="margin-top:10px" id="goSupport">${ICONS.chat}<span>Открыть чат поддержки</span></button>
       </div>
       <div class="card"><div class="about" style="text-align:center;color:var(--mut);font-size:11.5px">VEGA — быстро. Надёжно. Выгодно. ✦</div></div>`;
+    const copy = $('#lcCopyRef');
+    if (copy) copy.addEventListener('click', () => copyText(link, 'Ссылка скопирована'));
+    const goRefs = $('#lcGoRefs');
+    if (goRefs) goRefs.addEventListener('click', () => goTab('refs'));
     const go = $('#goSupport');
-    if (go) go.addEventListener('click', () => {
-      S.tab = 'support';
-      document.querySelectorAll('.view').forEach((v) => v.classList.add('hidden'));
-      $('#view-support').classList.remove('hidden');
-      renderNav();
-      renderSupport();
-    });
+    if (go) go.addEventListener('click', () => goTab('support'));
+  }
+
+  // Переключение вкладки нижнего меню (для кнопок внутри экранов).
+  function goTab(tab) {
+    S.tab = tab;
+    haptic('light');
+    document.querySelectorAll('.view').forEach((v) => v.classList.add('hidden'));
+    $('#view-' + tab).classList.remove('hidden');
+    renderNav();
+    if (tab === 'history') renderHistory();
+    if (tab === 'refs') renderRefs();
+    if (tab === 'profile') renderProfile();
+    if (tab === 'support') renderSupport();
+    syncTgBack();
   }
 
   /* ---------- поддержка чат ---------- */
@@ -1298,11 +1426,13 @@
       const o = S.order;
       haptic('medium');
       if (o.status === 'new' && isGiftOrder(o)) {
-        // Демо: карта «проверена» — сразу завершаем и показываем выплату USDT.
-        const r = await api(`/api/admin/order/${o.id}/confirm`, { method: 'POST' });
+        // Демо: оператор подключается к заявке — после этого клиент может отправить код.
+        const r = await api(`/api/admin/order/${o.id}/connect`, { method: 'POST' });
         S.order = r.order;
         renderOrderStage();
-        toast('Оператор проверил карту и выплатил USDT (демо)');
+        toast('Оператор подключился — клиент может отправить код (демо)');
+      } else if (o.status === 'details' && isGiftOrder(o)) {
+        toast('Оператор на связи — ждём код карты от клиента');
       } else if (o.status === 'new') {
         const r = await api(`/api/admin/order/${o.id}/req`, { method: 'POST' });
         S.order = r.order;
@@ -1376,12 +1506,12 @@
       renderAnnounce();
       renderFormMeta();
       if (S.tab === 'refs') renderRefs();
-      if (S.tab === 'info') renderInfo();
+      if (S.tab === 'profile') renderProfile();
     }
   }
 
   async function pollProfile() {
-    if (S.tab !== 'history' && S.tab !== 'refs') return;
+    if (S.tab !== 'history' && S.tab !== 'refs' && S.tab !== 'profile') return;
     const m = await api('/api/me');
     S.orders = m.orders;
     S.me = m.me;
@@ -1396,6 +1526,7 @@
     }
     if (S.tab === 'history') renderHistory();
     else if (S.tab === 'refs') renderRefs();
+    else if (S.tab === 'profile') renderProfile();
   }
 
   function startPolling() {
@@ -1420,13 +1551,21 @@
     try { tg.BackButton.onClick(onTgBackButton); } catch (e) { /* старые клиенты */ }
   }
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && S.sheet) closeAssetSheet();
+    if (e.key === 'Escape') { if (S.giftRules) giftRulesClose(); else if (S.sheet) closeAssetSheet(); }
   });
   // Нижняя шторка выбора актива — разовая привязка (она в index.html, вне #view-exchange).
   const sheetCloseBtn = $('#sheetClose');
   if (sheetCloseBtn) sheetCloseBtn.addEventListener('click', () => { haptic('light'); closeAssetSheet(); });
   const sheetOverlay = $('#sheetOverlay');
   if (sheetOverlay) sheetOverlay.addEventListener('click', closeAssetSheet);
+  const rulesConfirm = $('#giftRulesConfirm');
+  if (rulesConfirm) rulesConfirm.addEventListener('click', createGiftOrder);
+  const rulesCancel = $('#giftRulesCancel');
+  if (rulesCancel) rulesCancel.addEventListener('click', () => { haptic('light'); giftRulesClose(); });
+  const rulesClose = $('#giftRulesClose');
+  if (rulesClose) rulesClose.addEventListener('click', () => { haptic('light'); giftRulesClose(); });
+  const rulesOverlay = $('#giftRulesOverlay');
+  if (rulesOverlay) rulesOverlay.addEventListener('click', giftRulesClose);
 
   (async () => {
     try {
@@ -1454,7 +1593,7 @@
     renderHistory();
     renderRefs();
     renderSupport();
-    renderInfo();
+    renderProfile();
     // show correct initial tab
     document.querySelectorAll('.view').forEach((v) => v.classList.add('hidden'));
     $('#view-' + S.tab).classList.remove('hidden');

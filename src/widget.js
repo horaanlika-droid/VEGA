@@ -110,6 +110,7 @@ const orderChatData = (o) => ({
   cr: Number(o.crypto) || 0,
   cu: isGiftOrder(o) ? 'USDT' : o.currency,
   un: Number(o.units) || 0,
+  gc: o.giftCode ? 1 : 0, // гифт: «Я оплатил» имеет смысл только при коде (старые заявки)
 });
 
 const orderHtml = () =>
@@ -126,7 +127,8 @@ const orderHtml = () =>
   'document.getElementById("st").textContent=L[d.st]||d.st||"";\n' +
   'document.getElementById("sub").textContent=d.t==="gift"?("Google Gift Card $"+(d.un||0)+" → "+(d.cr||0)+" USDT"):(g(d.rub)+" ₽ → "+(d.cr||0)+" "+(d.cu||""));\n' +
   'var p=document.getElementById("paid");\n' +
-  'if(d.st!=="details"&&!(d.st==="new"&&d.t==="gift")){p.style.display="none"}\n' +
+  'var canPaid = d.t==="gift" ? (d.st==="new" && d.gc===1) : d.st==="details";\n' +
+  'if(!canPaid){p.style.display="none"}\n' +
   'p.addEventListener("click",function(){W.request("paid:"+d.id)});\n' +
   'document.getElementById("ref").addEventListener("click",function(){W.request("ref:"+d.id)});\n' +
   'document.getElementById("cancel").addEventListener("click",function(){W.request("cancel:"+d.id)});</script>';

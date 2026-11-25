@@ -516,3 +516,33 @@ input[readonly] { color: #9fe8d6 !important; }
 .sheet-empty { padding: 26px 12px; text-align: center; font-size: 12.5px; color: var(--mut); }
 .sheet-foot { margin-top: 12px; padding: 9px 12px; text-align: center; font-size: 10.5px; line-height: 1.5; color: var(--mut); border: 1px dashed var(--line); border-radius: 12px; }
 body.sheet-lock { overflow: hidden; }
+
+/* Диалог «Правила передачи карты» */
+.rules-body { display: flex; flex-direction: column; gap: 9px; margin-bottom: 14px; }
+.rules-item {
+  font-size: 12.5px; line-height: 1.5; color: var(--txt);
+  background: rgba(255, 255, 255, 0.03); border: 1px solid var(--line);
+  border-radius: 12px; padding: 9px 11px;
+}
+.rules-item b { color: #ffd88a; }
+
+/* ЛК клиента */
+.lc-head { display: flex; align-items: center; gap: 14px; }
+.lc-avatar {
+  width: 64px; height: 64px; flex: none; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 26px; font-weight: 800; color: #04222e;
+  background: linear-gradient(150deg, #29e6ff 0%, #17e9c0 100%);
+  box-shadow: 0 6px 22px rgba(23, 233, 192, 0.35), inset 0 0 0 1px rgba(255,255,255,0.35);
+}
+.lc-id { min-width: 0; }
+.lc-name { font-size: 17px; font-weight: 800; letter-spacing: .01em; }
+.lc-sub { font-size: 11.5px; color: var(--mut); margin-top: 2px; word-break: break-all; }
+.lc-note { font-size: 11px; color: var(--teal); margin-top: 6px; font-weight: 700; }
+.lc-stats { display: flex; gap: 10px; margin: 12px 0; }
+.lc-stat {
+  flex: 1; text-align: center; padding: 12px 6px 10px;
+  background: rgba(255, 255, 255, 0.03); border: 1px solid var(--line); border-radius: 16px;
+}
+.lc-stat b { display: block; font-size: 15px; font-weight: 800; color: #dff4ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lc-stat span { display: block; font-size: 10px; color: var(--mut); margin-top: 4px; letter-spacing: .02em; }
