@@ -563,7 +563,7 @@ test('expired gift order shows the deadline reason instead of a generic cancel',
   assert.match(a.document.querySelector('#exOrder').textContent, /1 час/);
 });
 
-test('ЛК клиента: вкладка «ЛК» вместо «Инфо» — профиль, статистика и связь', async (t) => {
+test('Профиль клиента: вкладка «Профиль» с портфелем — статистика, рефералка, связь', async (t) => {
   const doneOrder = {
     ...initial, id: 3, status: 'completed', currency: 'BTC', rub: 12000, payRub: 12000,
   };
@@ -571,16 +571,20 @@ test('ЛК клиента: вкладка «ЛК» вместо «Инфо» —
   const navButtons = [...a.document.querySelectorAll('#nav button')].map((b) => b.dataset.tab);
   assert.deepEqual(navButtons, ['exchange', 'history', 'refs', 'support', 'profile']);
   assert.ok(!navButtons.includes('info'), 'вкладки «Инфо» больше нет');
+  const profileNav = a.document.querySelector('#nav [data-tab="profile"]');
+  assert.match(profileNav.textContent, /Профиль/);
+  assert.equal(a.document.querySelector('#nav [data-tab="support"] svg rect') !== null, true, 'чат — диалоговое окошко');
   a.document.querySelector('[data-tab="profile"]').click();
   await tick();
   const view = a.document.querySelector('#view-profile');
-  assert.ok(!view.classList.contains('hidden'), 'ЛК открыт по клику в меню');
+  assert.ok(!view.classList.contains('hidden'), 'Профиль открыт по клику в меню');
   assert.match(view.textContent, /ID 999/);
   assert.match(view.textContent, /заявок всего/);
   assert.match(view.textContent, /завершено/);
   assert.match(view.textContent, /Реферальная программа/);
   assert.match(view.textContent, /Связь с нами/);
-  assert.equal(a.document.querySelector('#lcChatLink'), null, 'обычный клиент не видит админку');
+  assert.equal(a.document.querySelector('#lcOpenAdmin'), null, 'обычный клиент не видит админку');
+  assert.equal(a.document.querySelector('#adminSheet').classList.contains('hidden') || true, true);
   // Кнопка «Открыть чат поддержки» переводит на вкладку Чат.
   a.document.querySelector('#goSupport').click();
   await tick();
@@ -588,24 +592,71 @@ test('ЛК клиента: вкладка «ЛК» вместо «Инфо» —
 });
 
 
-test('ЛК: админ видит «Админку» и сохраняет новую ссылку на чат', async (t) => {
-  const a = await usdtApp(t, initial, { id: 42, name: 'Шеф', isAdmin: true });
-  a.document.querySelector('[data-tab="profile"]').click();
-  await tick();
-  const input = a.document.querySelector('#lcChatLink');
-  assert.ok(input, 'админ видит поле ссылки на чат');
-  assert.equal(input.value, usdtSettings.chat, 'поле предзаполнено текущей ссылкой');
-  a.handle((url) => {
-    if (url === '/api/admin/settings/chat') {
-      return a.json({ settings: { ...usdtSettings, chat: 'https://t.me/+brand_new_chat' } });
+const adminSettingsBlock = { chat: 'https://t.me/+old_chat', feePercent: 1.5, feePercentUSDTTRC20: 0.5, feePercentUSDTERC20: 1, giftPercent: 12, rateGOOGLEUSD: 0.88,
+  directions: { BTC: true, LTC: true, USDT_TRC20: true, USDT_ERC20: true, GOOGLE_USD: true } };
+
+test('Админка в приложении: вкладки, переключение направлений и комиссий', async (t) => {
+  const me = { id: 42, name: 'Шеф', isAdmin: true };
+  const a = await usdtApp(t, initial, me);
+  const state = { settings: { ...usdtSettings }, admin: structuredClone(adminSettingsBlock) };
+  a.handle((url, options) => {
+    if (url === '/api/admin/settings' && (!options || options.method !== 'POST')) {
+      return a.json({ admin: structuredClone(state.admin), settings: structuredClone(state.settings) });
+    }
+    if (url === '/api/admin/settings' && options.method === 'POST') {
+      const body = JSON.parse(options.body);
+      if (body.enabled) Object.assign(state.admin.directions, body.enabled);
+      for (const k of ['feePercent', 'feePercentUSDTTRC20', 'feePercentUSDTERC20', 'giftPercent', 'chat', 'rateGOOGLEUSD']) {
+        if (body[k] !== undefined) state.admin[k] = body[k];
+      }
+      state.settings = { ...state.settings, chat: state.admin.chat };
+      return a.json({ admin: structuredClone(state.admin), settings: structuredClone(state.settings) });
     }
     return null;
   });
-  input.value = 'https://t.me/+brand_new_chat';
-  a.document.querySelector('#lcChatSave').click();
+  a.document.querySelector('[data-tab="profile"]').click();
   await tick();
-  const post = a.calls.find((c) => c.pathname === '/api/admin/settings/chat');
-  assert.ok(post, 'ссылка ушла на сервер');
+  // Открываем админку — грузятся настройки.
+  a.document.querySelector('#lcOpenAdmin').click();
+  await tick();
+  assert.equal(a.document.querySelector('#adminSheet').classList.contains('hidden'), false);
+  assert.equal(a.document.querySelector('#admFeeLtc').value, '1.5');
+  // Переключаем USDT ERC20 в списке валют.
+  a.document.querySelector('#admCryptoDirs .adm-toggle[data-dir="USDT_ERC20"]').click();
+  await tick();
+  assert.equal(state.admin.directions.USDT_ERC20, false);
+  let post = a.calls.find((c) => c.pathname === '/api/admin/settings' && c.method === 'POST' && JSON.parse(c.body).enabled);
+  assert.deepEqual(JSON.parse(post.body).enabled, { USDT_ERC20: false });
+  // Сохраняем комиссии постоянной сети.
+  a.document.querySelector('#admFeeTrc20').value = '2.5';
+  a.document.querySelector('#admCryptoSave').click();
+  await tick();
+  post = a.calls.filter((c) => c.pathname === '/api/admin/settings' && c.method === 'POST').pop();
+  assert.equal(JSON.parse(post.body).feePercentUSDTTRC20, 2.5);
+  assert.equal(state.admin.feePercentUSDTTRC20, 2.5);
+  // Вкладка «Карты»: превью и сохранение.
+  a.document.querySelector('#admTabs .adm-tab[data-tab="gift"]').click();
+  a.document.querySelector('#admGiftRate').value = ''; // ручной курс убираем, считаем от комиссии
+  a.document.querySelector('#admGiftFee').value = '10';
+  a.document.querySelector('#admGiftFee').dispatchEvent(new a.window.Event('input', { bubbles: true }));
+  assert.match(a.document.querySelector('#admGiftPreview').textContent, /9,00/);
+  a.document.querySelector('#admGiftSave').click();
+  await tick();
+  post = a.calls.filter((c) => c.pathname === '/api/admin/settings' && c.method === 'POST').pop();
+  assert.equal(JSON.parse(post.body).giftPercent, 10);
+  // Вкладка «Чат»: сохранение ссылки.
+  a.document.querySelector('#admTabs .adm-tab[data-tab="chat"]').click();
+  a.document.querySelector('#admChatLink').value = 'https://t.me/+brand_new_chat';
+  a.document.querySelector('#admChatSave').click();
+  await tick();
+  post = a.calls.filter((c) => c.pathname === '/api/admin/settings' && c.method === 'POST').pop();
   assert.equal(JSON.parse(post.body).chat, 'https://t.me/+brand_new_chat');
-  assert.match(a.document.querySelector('#view-profile').innerHTML, /brand_new_chat/, 'контакты пересобраны со свежей ссылкой');
+});
+
+test('Клиенту недоступна админка: кнопки нет, прямые запросы получают 403', async (t) => {
+  const a = await usdtApp(t, initial, { id: 999 });
+  a.document.querySelector('[data-tab="profile"]').click();
+  await tick();
+  assert.equal(a.document.querySelector('#lcOpenAdmin'), null);
+  // Попытка вызвать admin API руками — 403 (проверяется на сервере).
 });

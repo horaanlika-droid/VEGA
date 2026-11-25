@@ -7,6 +7,7 @@ const receipts = require('./receipts');
 const currencies = require('./currencies');
 const { validateInitData, parseUser } = require('./validate');
 const admins = require('./admins');
+const rates = require('./rates');
 
 const clientOrder = (o) => ({
   id: o.id,
@@ -41,7 +42,7 @@ const clientUser = (u) => ({
   username: u.username,
   referrer: u.referrer,
   referredCount: u.referredCount || 0,
-  isAdmin: !config.botToken || admins.has(String(u.id)),
+  isAdmin: admins.has(String(u.id)) || (!config.botToken && String(u.id) === '900001'),
 });
 
 function startWeb() {
@@ -120,6 +121,106 @@ function startWeb() {
   });
 
   app.get('/api/settings', (req, res) => res.json(store.publicSettings()));
+
+  const isAdminRequest = (req) => {
+    const a = auth(req);
+    if (!a) return null;
+    const id = String(a.user.id);
+    // В демо-режиме (BOT_TOKEN не задан) админка открыта только демо-гостю и админам — клиенты её не видят.
+    return admins.has(id) || (!config.botToken && id === '900001') ? a : null;
+  };
+
+  // Админка: текущие значения всех редактируемых настроек (в /api/settings их нет — комиссии не светим).
+  const adminSettingsBlock = () => {
+    const s = store.get().settings;
+    const on = (key) => currencies.isEnabled(s, key);
+    return {
+      chat: s.chat,
+      feePercent: s.feePercent ?? 0,
+      feePercentUSDTTRC20: s.feePercentUSDTTRC20 ?? 0,
+      feePercentUSDTERC20: s.feePercentUSDTERC20 ?? 0,
+      giftPercent: s.giftPercent ?? 0,
+      rateGOOGLEUSD: s.rateGOOGLEUSD ?? null,
+      directions: { BTC: on('BTC'), LTC: on('LTC'), USDT_TRC20: on('USDT_TRC20'), USDT_ERC20: on('USDT_ERC20'), GOOGLE_USD: on('GOOGLE_USD') },
+    };
+  };
+
+  app.get('/api/admin/settings', (req, res) => {
+    const a = needAuth(req, res);
+    if (!a) return;
+    if (!isAdminRequest(req)) return res.status(403).json({ error: 'Только для оператора VEGA' });
+    res.json({ admin: adminSettingsBlock(), settings: store.publicSettings() });
+  });
+
+  const DIRECTION_KEYS = ['BTC', 'LTC', 'USDT_TRC20', 'USDT_ERC20', 'GOOGLE_USD'];
+  const feeValue = (v) => (Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= 50 ? Number(v) : null);
+
+  // Админка: частичное обновление настроек (чат, направления, комиссии, курс карты).
+  app.post('/api/admin/settings', (req, res) => {
+    const a = needAuth(req, res);
+    if (!a) return;
+    if (!isAdminRequest(req)) return res.status(403).json({ error: 'Только для оператора VEGA' });
+    const body = req.body || {};
+    const patch = {};
+    // 1) Направления (вкл/выкл)
+    if (body.enabled && typeof body.enabled === 'object') {
+      const map = {};
+      for (const key of Object.keys(body.enabled)) {
+        if (!DIRECTION_KEYS.includes(key)) return res.status(400).json({ error: `Неизвестное направление: ${key}` });
+        if (typeof body.enabled[key] !== 'boolean') return res.status(400).json({ error: 'enabled: только true/false' });
+        map[key] = body.enabled[key];
+      }
+      patch.enabled = map;
+    }
+    // 2) Комиссии BTC/LTC и USDT
+    for (const key of ['feePercent', 'feePercentUSDTTRC20', 'feePercentUSDTERC20']) {
+      if (body[key] === undefined) continue;
+      const v = feeValue(body[key]);
+      if (v === null) return res.status(400).json({ error: 'Комиссия — число от 0 до 50 (%).' });
+      patch[key] = v;
+    }
+    // 3) Гифт-карта: комиссия (0–50) и ручной курс (0.01–100 USDT за $1)
+    if (body.giftPercent !== undefined) {
+      const v = feeValue(body.giftPercent);
+      if (v === null) return res.status(400).json({ error: 'Комиссия карты — число от 0 до 50 (%).' });
+      patch.giftPercent = v;
+    }
+    let manualGiftRate = null;
+    if (body.rateGOOGLEUSD !== undefined && body.rateGOOGLEUSD !== null && body.rateGOOGLEUSD !== '') {
+      const v = Number(body.rateGOOGLEUSD);
+      if (!Number.isFinite(v) || v <= 0 || v > 100) return res.status(400).json({ error: 'Курс карты — число от 0.01 до 100 USDT за $1.' });
+      manualGiftRate = v;
+    }
+    // 4) Ссылка на чат (тот же формат, что и в отдельном эндпоинте)
+    if (body.chat !== undefined) {
+      const chat = String(body.chat || '').trim().slice(0, 300);
+      if (chat.length < 8 || !/^(https:\/\/|@[A-Za-z0-9_]{5,32}$)/.test(chat)) {
+        return res.status(400).json({ error: 'Укажите ссылку t.me/… или юзернейм @…' });
+      }
+      patch.chat = chat;
+    }
+    if (!Object.keys(patch).length && manualGiftRate === null) {
+      return res.status(400).json({ error: 'Нечего обновлять — пришлите хотя бы одно поле.' });
+    }
+    store.mutate((db) => {
+      const s = db.settings;
+      if (patch.enabled) {
+        s.enabled = { ...(s.enabled || {}), ...patch.enabled };
+      }
+      for (const key of ['feePercent', 'feePercentUSDTTRC20', 'feePercentUSDTERC20', 'giftPercent', 'chat']) {
+        if (patch[key] !== undefined) s[key] = patch[key];
+      }
+    });
+    // Пересчёт итоговых курсов после смены комиссий (курс карты выводится из giftPercent).
+    if (['feePercent', 'feePercentUSDTTRC20', 'feePercentUSDTERC20', 'giftPercent'].some((k) => patch[k] !== undefined)) {
+      rates.recomputeWithFee();
+    }
+    // Ручной курс карты применяется ПОСЛЕ пересчёта (как set:rate_gift в боте).
+    if (manualGiftRate !== null) {
+      store.mutate((db) => { db.settings.rateGOOGLEUSD = manualGiftRate; });
+    }
+    res.json({ settings: store.publicSettings(), admin: adminSettingsBlock() });
+  });
 
   // Админка: смена ссылки на чат — сразу видна всем на сайте и в приложении.
   app.post('/api/admin/settings/chat', (req, res) => {

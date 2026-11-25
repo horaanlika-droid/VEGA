@@ -33,7 +33,7 @@
   // dir — выбранное направление (ключ из /api/settings → rates[]).
   // screen — на каком под-экране обмена мы находимся: «picker» (выбор активов) или «form» (форма обмена).
   // sheet — какая шторка открыта (crypto | gift) или null.
-  const S = { settings: null, me: null, orders: [], order: null, tab: 'exchange', dir: 'BTC', isDemo: false, calcFrom: 'rub', support: [], mode: 'buy', screen: 'picker', sheet: null, giftRules: false };
+  const S = { settings: null, me: null, orders: [], order: null, tab: 'exchange', dir: 'BTC', isDemo: false, calcFrom: 'rub', support: [], mode: 'buy', screen: 'picker', sheet: null, giftRules: false, adminOpen: false, admin: null };
 
   // Резервный реестр направлений: нужен, если сервер старой версии не прислал rates.
   const FALLBACK_DIRS = [
@@ -233,8 +233,8 @@
     swap: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>',
     clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
     users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.4 3.4-5 6.5-5s5.7 1.6 6.5 5"/><circle cx="17" cy="9" r="2.6"/><path d="M16.5 15.2c2.6.3 4.4 1.8 5 4.8"/></svg>',
-    user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.6"/><path d="M5 20c.8-3.6 3.6-5.6 7-5.6s6.2 2 7 5.6"/></svg>',
-    chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="10.5" r="4.2"/><path d="M4.5 21c.9-3.8 4-5.8 7.5-5.8s6.6 2 7.5 5.8"/><path d="M6.8 10.6a5.2 5.2 0 0 1 10.4 0"/><path d="M17.2 10.6v2a1.6 1.6 0 0 1-1.6 1.6h-1.6"/></svg>',
+    user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7.6" width="18" height="12.4" rx="2.6"/><path d="M9.2 7.6V6.1A2.1 2.1 0 0 1 11.3 4h1.4a2.1 2.1 0 0 1 2.1 2.1v1.5"/><path d="M3 13.2h18"/><path d="M12 12v2.6"/></svg>',
+    chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.6" width="18" height="12.8" rx="4.1"/><path d="M8.4 17.4v3.9c0 .7.8 1.1 1.3.6l3.9-4.1"/><circle cx="8.6" cy="11" r="1.05" fill="currentColor" stroke="none"/><circle cx="12" cy="11" r="1.05" fill="currentColor" stroke="none"/><circle cx="15.4" cy="11" r="1.05" fill="currentColor" stroke="none"/></svg>',
     down: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16"/><path d="m6 14 6 6 6-6"/></svg>',
     copy: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
     check: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 12.5 5 5 10-11"/></svg>',
@@ -267,7 +267,7 @@
       ['history', 'История', ICONS.clock],
       ['refs', 'Рефералы', ICONS.users],
       ['support', 'Чат', ICONS.chat],
-      ['profile', 'ЛК', ICONS.user],
+      ['profile', 'Профиль', ICONS.user],
     ];
     $('#nav').innerHTML = items
       .map(([id, l, ic]) => `<button data-tab="${id}" class="${S.tab === id ? 'on' : ''}">${ic}<span>${l}</span>${id==='support' && S.support.length ? `<span class="badge">${S.support.length>99?'99+':S.support.length}</span>` : ''}</button>`)
@@ -404,11 +404,12 @@
   function syncTgBack() {
     try {
       if (!tg || !tg.BackButton) return;
-      const need = S.tab === 'exchange' && !S.order && (S.screen === 'form' || !!S.sheet || !!S.giftRules);
+      const need = S.tab === 'exchange' && !S.order && (S.screen === 'form' || !!S.sheet || !!S.giftRules || !!S.adminOpen);
       if (need) tg.BackButton.show(); else tg.BackButton.hide();
     } catch (e) { /* не-Telegram окружение */ }
   }
   function onTgBackButton() {
+    if (S.adminOpen) { closeAdminSheet(); return; }
     if (S.giftRules) { giftRulesClose(); return; }
     if (S.sheet) { closeAssetSheet(); return; }
     if (S.tab === 'exchange' && S.screen === 'form') goToAssetPicker();
@@ -951,7 +952,6 @@
       const expired = o.cancelReason === 'Срок на сделку истёк';
       box.innerHTML = `
         <div class="card stage">
-          <div class="failmark">${rej ? '🔴' : '⚪'}</div>
           <div class="stage-title">${rej ? 'Карта не принята' : expired ? 'Срок на сделку истёк' : 'Заявка отменена'}</div>
           <div class="stage-sub">${rej ? 'Оператор не смог подтвердить карту по заявке #' + o.id + '. Проверьте код или напишите в поддержку.' : expired ? 'На сделку даётся 1 час. Создайте новую заявку с тем же кодом карты.' : 'Вы отменили заявку #' + o.id + '.'}</div>
           <button class="btn btn-primary" style="margin-top:18px" id="btnNew">Новая заявка</button>
@@ -1080,7 +1080,6 @@
       const rej = o.status === 'rejected';
       box.innerHTML = `
         <div class="card stage">
-          <div class="failmark">${rej ? '🔴' : '⚪'}</div>
           <div class="stage-title">${rej ? 'Заявка отклонена' : 'Заявка отменена'}</div>
           <div class="stage-sub">${rej ? 'Оператор отклонил заявку #' + o.id + '. Если это ошибка — напишите в поддержку.' : 'Вы отменили заявку #' + o.id + '.'}</div>
           ${o.txUrl ? `<div class="tx-box"><div class="tx-label">🔗 Блокчейн</div><a class="tx-link" href="${esc(o.txUrl)}" target="_blank" rel="noopener">${esc(o.txUrl)}</a></div>` : ''}
@@ -1183,7 +1182,7 @@
   function renderHistory() {
     const v = $('#view-history');
     if (!S.orders.length) {
-      v.innerHTML = `<div class="card"><div class="empty"><div class="e-ic">🗂</div>История пока пуста.<br>Совершите первый обмен — он появится здесь.</div></div>`;
+      v.innerHTML = `<div class="card"><div class="empty">История пока пуста.<br>Совершите первый обмен — он появится здесь.</div></div>`;
       return;
     }
     v.innerHTML =
@@ -1259,7 +1258,6 @@
     const v = $('#view-profile');
     const me = S.me || {};
     const name = me.name || 'Клиент';
-    const letter = (String(name).trim()[0] || 'V').toUpperCase();
     const userLine = [me.username ? '@' + me.username : null, 'ID ' + (me.id ?? '—')].filter(Boolean).join(' · ');
     const doneOrders = S.orders.filter((o) => o.status === 'completed');
     const volume = doneOrders.reduce((sum, o) => sum + Number(o.payRub || o.rub || 0), 0);
@@ -1267,7 +1265,6 @@
     const link = s.botUsername ? `https://t.me/${s.botUsername}?startapp=ref${me.id}` : null;
     v.innerHTML = `
       <div class="card lc-head">
-        <div class="lc-avatar">${esc(letter)}</div>
         <div class="lc-id">
           <div class="lc-name">${esc(name)}</div>
           <div class="lc-sub">${esc(userLine)}</div>
@@ -1289,14 +1286,7 @@
         </div>` : ''}
       </div>
       ${S.me.isAdmin ? `
-      <div class="card">
-        <div class="card-title">🛠 Админка</div>
-        <div class="about" style="font-size:12px;color:var(--mut);margin-bottom:10px;line-height:1.55">Ссылка на чат поддержки. Сохраняется сразу и видна всем на сайте и в приложении. Та же настройка меняется в боте: ⚙️ Настройки → 💬 Чат.</div>
-        <label class="f-label" for="lcChatLink"><span>Ссылка на чат</span></label>
-        <div class="f-box"><input id="lcChatLink" placeholder="https://t.me/… или @юзернейм" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
-        <div class="f-err" id="lcChatErr"></div>
-        <button class="btn btn-primary" style="margin-top:10px" id="lcChatSave"><span>Сохранить ссылку</span></button>
-      </div>` : ''}
+      <button class="btn btn-ghost lc-admin-btn" id="lcOpenAdmin">🛠 <span>Админка и настройки обменника</span></button>` : ''}
       <div class="card">
         <div class="card-title">Связь с нами</div>
         <div class="contacts">
@@ -1313,36 +1303,174 @@
     if (goRefs) goRefs.addEventListener('click', () => goTab('refs'));
     const go = $('#goSupport');
     if (go) go.addEventListener('click', () => goTab('support'));
-    const chatInput = $('#lcChatLink');
-    if (chatInput) {
-      chatInput.value = S.settings.chat || '';
-      const errEl = $('#lcChatErr');
-      const saveBtn = $('#lcChatSave');
-      chatInput.addEventListener('input', () => { errEl.textContent = ''; });
-      saveBtn.addEventListener('click', async () => {
-        const chat = (chatInput.value || '').trim();
-        errEl.textContent = '';
-        if (!/^(https:\/\/|@[A-Za-z0-9_]{5,32}$)/.test(chat) || chat.length < 8) {
-          errEl.textContent = 'Укажите ссылку t.me/… или юзернейм @… (например https://t.me/+abc или @vega_support).';
-          return;
-        }
-        saveBtn.disabled = true;
-        haptic('medium');
+    const openAdmin = $('#lcOpenAdmin');
+    if (openAdmin) openAdmin.addEventListener('click', () => { haptic('light'); openAdminSheet(); });
+  }
+
+  /* ---------- админка в приложении (только для оператора VEGA) ---------- */
+  S.adminOpen = S.adminOpen || false;
+  S.admin = S.admin || null;
+  let adminSheetTimer = null;
+  let adminSheetFrames = [];
+  let adminTab = S.adminTab || 'crypto';
+  const CRYPTO_DIRS = [['BTC', 'Bitcoin', 'BTC'], ['LTC', 'Litecoin', 'LTC'], ['USDT_TRC20', 'USDT TRC20', 'USDT · TRC20'], ['USDT_ERC20', 'USDT ERC20', 'USDT · ERC20']];
+  const giftRateOf = (fee, manual) => {
+    const m = Number(manual);
+    if (Number.isFinite(m) && m > 0) return m;
+    const p = Number(fee);
+    const safe = Number.isFinite(p) ? Math.min(Math.max(p, 0), 95) : 0;
+    return Math.round((100 - safe)) / 100;
+  };
+  const giftPreviewText = (fee, manual) => {
+    const rate = giftRateOf(fee, manual);
+    const out = Math.floor(10 * rate * 100 + 1e-6) / 100;
+    return `Карта $10 → ${out.toFixed(2).replace('.', ',')} USDT`;
+  };
+  function syncAdminTabs() {
+    document.querySelectorAll('#admTabs .adm-tab').forEach((b) => b.classList.toggle('on', b.dataset.tab === adminTab));
+    document.querySelectorAll('#adminSheet .adm-pane').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== adminTab));
+  }
+  function openAdminSheet() {
+    const sheet = $('#adminSheet');
+    if (!sheet) return;
+    if (adminSheetTimer) { clearTimeout(adminSheetTimer); adminSheetTimer = null; }
+    sheet.classList.remove('hidden');
+    sheet.setAttribute('aria-hidden', 'false');
+    adminSheetFrames = [requestAnimationFrame(() => { adminSheetFrames[1] = requestAnimationFrame(() => sheet.classList.add('open')); })];
+    document.body.classList.add('sheet-lock');
+    S.adminOpen = true;
+    syncAdminTabs();
+    syncTgBack();
+    loadAdminSettings();
+  }
+  function closeAdminSheet() {
+    const sheet = $('#adminSheet');
+    S.adminOpen = false;
+    document.body.classList.remove('sheet-lock');
+    adminSheetFrames.forEach((f) => { try { cancelAnimationFrame(f); } catch (e) {} });
+    adminSheetFrames = [];
+    if (!sheet || sheet.classList.contains('hidden')) { syncTgBack(); return; }
+    sheet.classList.remove('open');
+    sheet.setAttribute('aria-hidden', 'true');
+    if (adminSheetTimer) clearTimeout(adminSheetTimer);
+    adminSheetTimer = setTimeout(() => sheet.classList.add('hidden'), 320);
+    syncTgBack();
+  }
+  function renderAdminDirs(container, keys) {
+    const A = S.admin || {};
+    container.innerHTML = keys
+      .map(([key, label, sub]) => `<button class="adm-toggle ${A.directions && A.directions[key] ? 'on' : ''}" data-dir="${key}" role="switch" aria-checked="${A.directions && A.directions[key] ? 'true' : 'false'}"><span>${esc(label)}<small>${esc(sub)}</small></span><span class="adm-switch" aria-hidden="true"></span></button>`)
+      .join('');
+    container.querySelectorAll('.adm-toggle').forEach((btn) =>
+      btn.addEventListener('click', async () => {
+        const key = btn.dataset.dir;
+        const next = !(S.admin && S.admin.directions && S.admin.directions[key]);
+        btn.disabled = true;
+        haptic('light');
         try {
-          const r = await api('/api/admin/settings/chat', { method: 'POST', body: { chat } });
+          const r = await api('/api/admin/settings', { method: 'POST', body: { enabled: { [key]: next } } });
+          S.admin = r.admin;
           S.settings = r.settings;
-          renderAnnounce();
-          toast('Ссылка на чат сохранена — уже видна всем ✅');
-          renderProfile(); // пересобираем контакты и поле со свежей ссылкой
-          return;
+          renderAdminDirs(container, keys);
+          renderExchange();
+          toast(next ? `${key === 'GOOGLE_USD' ? 'Карта' : key} включена ✅` : `${key === 'GOOGLE_USD' ? 'Карта' : key} выключена ⛔`);
         } catch (e) {
-          errEl.textContent = e.message;
-          toast(e.message);
-        } finally {
-          saveBtn.disabled = false;
+          toast(e.message || 'Не удалось переключить направление');
+          btn.disabled = false;
         }
-      });
+      })
+    );
+  }
+  function renderAdmin() {
+    const A = S.admin;
+    if (!A) return;
+    // Валюты
+    renderAdminDirs($('#admCryptoDirs'), CRYPTO_DIRS);
+    $('#admFeeLtc').value = A.feePercent;
+    $('#admFeeTrc20').value = A.feePercentUSDTTRC20;
+    $('#admFeeErc20').value = A.feePercentUSDTERC20;
+    $('#admCryptoErr').textContent = '';
+    // Карты
+    renderAdminDirs($('#admGiftDirs'), [['GOOGLE_USD', 'Google Gift Card', 'приём карт в USD']]);
+    $('#admGiftFee').value = A.giftPercent;
+    $('#admGiftRate').value = A.rateGOOGLEUSD ?? '';
+    $('#admGiftErr').textContent = '';
+    updateGiftPreview();
+    // Чат
+    $('#admChatLink').value = A.chat || '';
+    $('#admChatErr').textContent = '';
+  }
+  async function loadAdminSettings(force = false) {
+    if (S.admin && !force) { renderAdmin(); return; }
+    try {
+      const r = await api('/api/admin/settings');
+      S.admin = r.admin;
+      S.settings = r.settings;
+      renderAdmin();
+    } catch (e) {
+      toast('Не удалось загрузить настройки администратора');
     }
+  }
+  async function saveAdmin(body, errEl, okText) {
+    errEl.textContent = '';
+    try {
+      const r = await api('/api/admin/settings', { method: 'POST', body });
+      S.admin = r.admin;
+      S.settings = r.settings;
+      renderAdmin();
+      renderExchange();
+      toast(okText);
+      return true;
+    } catch (e) {
+      errEl.textContent = e.message;
+      toast(e.message);
+      return false;
+    }
+  }
+  function updateGiftPreview() {
+    const el = $('#admGiftPreview');
+    if (!el) return;
+    el.textContent = giftPreviewText($('#admGiftFee').value, $('#admGiftRate').value);
+  }
+  function wireAdminSheet() {
+    document.querySelectorAll('#admTabs .adm-tab').forEach((b) =>
+      b.addEventListener('click', () => { adminTab = b.dataset.tab; haptic('light'); syncAdminTabs(); })
+    );
+    const closeBtn = $('#adminSheetClose');
+    if (closeBtn) closeBtn.addEventListener('click', () => { haptic('light'); closeAdminSheet(); });
+    const overlay = $('#adminSheetOverlay');
+    if (overlay) overlay.addEventListener('click', closeAdminSheet);
+    $('#admCryptoSave').addEventListener('click', (e) => {
+      e.currentTarget.disabled = true;
+      haptic('medium');
+      const num = (id) => Number($(id).value);
+      saveAdmin(
+        { feePercent: num('#admFeeLtc'), feePercentUSDTTRC20: num('#admFeeTrc20'), feePercentUSDTERC20: num('#admFeeErc20') },
+        $('#admCryptoErr'),
+        'Комиссии сохранены ✅'
+      ).finally(() => { $('#admCryptoSave').disabled = false; });
+    });
+    $('#admGiftSave').addEventListener('click', (e) => {
+      e.currentTarget.disabled = true;
+      haptic('medium');
+      const fee = $('#admGiftFee').value;
+      const rate = $('#admGiftRate').value;
+      saveAdmin(
+        { giftPercent: fee === '' ? 0 : Number(fee), rateGOOGLEUSD: rate === '' ? null : Number(rate) },
+        $('#admGiftErr'),
+        'Настройки карты сохранены ✅'
+      ).finally(() => { $('#admGiftSave').disabled = false; });
+    });
+    $('#admGiftFee').addEventListener('input', updateGiftPreview);
+    $('#admGiftRate').addEventListener('input', updateGiftPreview);
+    $('#admChatLink').addEventListener('input', () => { $('#admChatErr').textContent = ''; });
+    $('#admChatSave').addEventListener('click', (e) => {
+      e.currentTarget.disabled = true;
+      haptic('medium');
+      const chat = ($('#admChatLink').value || '').trim();
+      saveAdmin({ chat }, $('#admChatErr'), 'Ссылка на чат сохранена — уже видна всем ✅')
+        .finally(() => { $('#admChatSave').disabled = false; });
+    });
   }
 
   // Переключение вкладки нижнего меню (для кнопок внутри экранов).
@@ -1367,7 +1495,7 @@
         <div class="card-title">Чат поддержки</div>
         <div class="about" style="font-size:12px;color:var(--mut);margin-bottom:10px">Задайте вопрос оператору — отвечаем в реальном времени. Обычно отвечаем за 1–3 минуты.</div>
         <div class="chat-box" id="chatBox">
-          <div class="chat-empty" id="chatEmpty"><div class="e-ic">💬</div>Напишите сообщение — мы на связи 24/7</div>
+          <div class="chat-empty" id="chatEmpty">Напишите сообщение — мы на связи 24/7</div>
           <div class="chat-list" id="chatList"></div>
         </div>
         <div class="chat-input">
@@ -1451,7 +1579,7 @@
   }
 
   function renderDemoAdmin() {
-    if (!S.isDemo) return;
+    if (!S.isDemo || !(S.me && S.me.isAdmin)) return;
     let el = $('#demoAdmin');
     if (!el) {
       el = document.createElement('button');
@@ -1590,7 +1718,7 @@
     try { tg.BackButton.onClick(onTgBackButton); } catch (e) { /* старые клиенты */ }
   }
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { if (S.giftRules) giftRulesClose(); else if (S.sheet) closeAssetSheet(); }
+    if (e.key === 'Escape') { if (S.adminOpen) closeAdminSheet(); else if (S.giftRules) giftRulesClose(); else if (S.sheet) closeAssetSheet(); }
   });
   // Нижняя шторка выбора актива — разовая привязка (она в index.html, вне #view-exchange).
   const sheetCloseBtn = $('#sheetClose');
@@ -1605,6 +1733,7 @@
   if (rulesClose) rulesClose.addEventListener('click', () => { haptic('light'); giftRulesClose(); });
   const rulesOverlay = $('#giftRulesOverlay');
   if (rulesOverlay) rulesOverlay.addEventListener('click', giftRulesClose);
+  wireAdminSheet();
 
   (async () => {
     try {
