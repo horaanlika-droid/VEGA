@@ -84,7 +84,8 @@ const PAIRS = {
   },
   // Подарочные карты: клиент отдаёт код карты с номиналом в долларах, мы проверяем
   // его и выплачиваем USDT (сеть выбирает клиент). Номинал — от $10 и кратно $10.
-  // Курс фиксированный относительно номинала: $10 → 8.5 USDT при скидке 15%.
+  // По умолчанию 1 $ номинала = 1 USDT; админ назначает комиссию (giftPercent).
+  // Курс фиксированный относительно номинала: $10 → 8.5 USDT при комиссии 15%.
   GOOGLE_USD: {
     key: 'GOOGLE_USD',
     direction: 'sell',
@@ -99,7 +100,7 @@ const PAIRS = {
     display: 0,
     rateDecimals: 2,
     // Курс — сколько USDT платим за $1 номинала: (100 − giftPercent) / 100.
-    // При giftPercent = 15 получается 0.85 → карта $10 даёт 8.5 USDT.
+    // При giftPercent = 0 → 1 USDT за $1 (по номиналу, дефолт); 15% → 0.85 → карта $10 даёт 8.5 USDT.
     rateKey: 'rateGOOGLEUSD',
     baseKey: null,
     feeKey: 'giftPercent',
@@ -308,9 +309,19 @@ function publicRates(settings) {
   }));
 }
 
-// Пул выплат по гифт-картам: из него оператор отправляет USDT клиенту.
-// В боте показываем диапазон курса двух сетей — их и видит клиент.
-// Курс гифт-карты: сколько USDT даём за $1 номинала (0.85 при скидке 15%).
+// Сколько USDT получит клиент, отдавший карту на units долларов.
+// Курс карты — доля номинала в USDT (при 0%: $10 → 10 USDT), от сети не зависит.
+function giftPayout(settings, units, network) {
+  const cardRate = rateOf(settings, GIFT_KEY, null);
+  if (!(cardRate > 0)) return null;
+  if (!isEnabled(settings, network === 'ERC20' ? 'USDT_ERC20' : 'USDT_TRC20')) return null;
+  const dec = payoutDecimals(GIFT_KEY);
+  const mul = 10 ** dec;
+  const crypto = Math.floor((Number(units) || 0) * cardRate * mul + 1e-6) / mul;
+  const usdtRate = rateOf(settings, 'USDT', network);
+  return { crypto, rate: cardRate, cardRate, usdtRate };
+}
+
 const giftRateFromPercent = (percent) => {
   const p = Number(percent);
   const safe = Number.isFinite(p) ? Math.min(Math.max(p, 0), 95) : 0;
@@ -359,6 +370,7 @@ module.exports = {
   payoutCurrency,
   giftRateFromPercent,
   giftPercentFromRate,
+  giftPayout,
   giftPayouts,
   stepOf,
   minUnitsOf,

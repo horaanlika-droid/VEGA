@@ -185,7 +185,7 @@ const giftDir = {
   walletHint: 'Адрес USDT-кошелька (T… или 0x…)',
   walletPattern: '^(T[1-9A-HJ-NP-Za-km-z]{33}|0x[0-9a-fA-F]{40})$',
   walletError: 'Укажите адрес USDT: TRC20 начинается с T (34 символа), ERC20 — 0x и 40 hex-символов.',
-  rate: 0.85, enabled: true,
+  rate: 1, enabled: true,
 };
 
 const usdtSettings = {
@@ -382,28 +382,28 @@ test('Google Gift Card from the sheet swaps the form', async (t) => {
   assert.ok(a.document.querySelector('#giftForm').classList.contains('hidden'));
 });
 
-test('gift nominal rounds to $10 and price is fixed: $10 → 8.5 USDT in any network', async (t) => {
+test('gift nominal rounds to $10 and price is 1:1 by default: $10 → 10 USDT in any network', async (t) => {
   const a = await usdtApp(t);
   await pickAssetUi(a, 'GOOGLE_USD');
   const units = a.document.querySelector('#inUnits');
   units.value = '37';
   units.dispatchEvent(new a.window.Event('input', { bubbles: true }));
-  // 37 → 30, курс карты 0.85 USDT за $1 → 25.5 USDT.
-  assert.equal(a.document.querySelector('#outUsdt').value, '25.5 USDT');
+  // 37 → 30, курс карты 1 USDT за $1 (по умолчанию, комиссия оператора 0%) → 30 USDT.
+  assert.equal(a.document.querySelector('#outUsdt').value, '30 USDT');
   // Адрес ERC20 определяет сеть, но цена карты не меняется.
   const wallet = a.document.querySelector('#inUsdtWallet');
   wallet.value = '0x' + 'a'.repeat(40);
   wallet.dispatchEvent(new a.window.Event('input', { bubbles: true }));
-  assert.equal(a.document.querySelector('#outUsdt').value, '25.5 USDT · ERC20');
-  // Карта $10 — ровно 8.5 USDT.
+  assert.equal(a.document.querySelector('#outUsdt').value, '30 USDT · ERC20');
+  // Карта $10 — ровно 10 USDT.
   units.value = '10';
   units.dispatchEvent(new a.window.Event('input', { bubbles: true }));
-  assert.equal(a.document.querySelector('#outUsdt').value, '8.5 USDT · ERC20');
+  assert.equal(a.document.querySelector('#outUsdt').value, '10 USDT · ERC20');
   // Быстрый номинал подставляет значение.
   a.document.querySelectorAll('#segNom button')[2].click();
   assert.equal(units.value, '50');
   assert.match(a.document.querySelector('#giftMeta').textContent, /\$50/);
-  assert.match(a.document.querySelector('#giftMeta').textContent, /1 \$ = 0.85 USDT/);
+  assert.match(a.document.querySelector('#giftMeta').textContent, /1 \$ = 1 USDT/);
 });
 
 test('selling a card sends units, code and wallet to the API', async (t) => {
