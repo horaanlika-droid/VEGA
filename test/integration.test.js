@@ -71,12 +71,17 @@ async function api(route, { id = 999, method = 'GET', body = {} } = {}) {
   return fetch(url, { method, ...(method === 'POST' ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}) });
 }
 async function newOrder() {
-  const r = await api('/api/orders', { method: 'POST', body: { rub: 5000, currency: 'BTC', wallet: 'bc1' + 'a'.repeat(30) } });
+  const r = await api('/api/orders', { method: 'POST', body: { cryptoAmount: 0.001, currency: 'BTC', wallet: 'bc1' + 'a'.repeat(30) } });
   assert.equal(r.status, 200);
   const { order } = await r.json();
   // Дожидаемся очереди карточек (HTTP намеренно не ждёт Telegram).
   await bus.emit('order_event', { order, type: 'new' });
-  return order;
+  // Живая механика: оператор называет сумму, клиент соглашается — после этого сделка продолжается.
+  await click(222, `o:${order.id}:quote`);
+  await text(222, '5 000');
+  await api(`/api/order/${order.id}/quote-accept`, { method: 'POST' });
+  calls = [];
+  return store.getOrder(order.id);
 }
 after(async () => {
   server.closeAllConnections();
@@ -149,17 +154,60 @@ test('requisites publish atomically after one admin text, visible in authenticat
   assert.equal(profile.orders.find((x) => x.id === o.id).requisites, req);
 });
 
-test('custom amount is selected BEFORE publication; invalid amount and oversized requisites are rejected', async () => {
-  const o = await newOrder();
-  await click(111, `o:${o.id}:quote`);
-  await text(111, '5000 мусор');
-  assert.equal(store.getOrder(o.id).status, 'new');
-  await text(111, '5 123');
-  await text(111, 'x'.repeat(901));
-  assert.equal(store.getOrder(o.id).requisites, null);
-  await text(111, 'Банк, номер, получатель');
-  assert.equal(store.getOrder(o.id).payRub, 5123);
-  assert.equal(store.getOrder(o.id).status, 'details');
+test('quote flow: оператор называет сумму, клиент соглашается — сделка продолжается', async () => {
+  const r = await api('/api/orders', { method: 'POST', body: { cryptoAmount: 0.001, currency: 'BTC', wallet: 'bc1' + 'a'.repeat(30) } });
+  const { order } = await r.json();
+  await bus.emit('order_event', { order, type: 'new' });
+  calls = [];
+  // Пока сумма не названа — «Выдать реквизиты» недоступна.
+  await click(222, `o:${order.id}:req`);
+  assert.equal(store.getOrder(order.id).status, 'new');
+  const early = calls.filter((c) => c.method === 'sendMessage' && /назвать сумму/i.test(String(c.text || '')));
+  assert.ok(early.length >= 1, 'админу подсказывают назвать сумму до реквизитов');
+  calls = [];
+  // Оператор называет сумму — заявка уходит клиенту на согласование.
+  await click(222, `o:${order.id}:quote`);
+  await text(222, '5 123');
+  const quoted = store.getOrder(order.id);
+  assert.equal(quoted.status, 'quote');
+  assert.equal(quoted.payRub, 5123);
+  const ask = calls.find((c) => c.method === 'sendMessage' && String(c.chat_id) === '999' && /сумма к оплате/i.test(String(c.text || '')));
+  assert.ok(ask, 'клиент получил сообщение с суммой');
+  // Клиент согласен (через web API) — заявка снова «new» с согласованной суммой.
+  const accept = await api(`/api/order/${order.id}/quote-accept`, { method: 'POST' });
+  assert.equal(accept.status, 200);
+  const agreed = store.getOrder(order.id);
+  assert.equal(agreed.status, 'new');
+  assert.equal(agreed.payRub, 5123);
+  // Повторное согласие невозможно.
+  const again = await api(`/api/order/${order.id}/quote-accept`, { method: 'POST' });
+  assert.equal(again.status, 400);
+  calls = [];
+  // Теперь можно выдать реквизиты.
+  await click(222, `o:${order.id}:req`);
+  await text(222, 'x'.repeat(901));
+  assert.equal(store.getOrder(order.id).requisites, null, 'слишком длинные реквизиты отклоняются');
+  await text(222, 'Банк, номер, получатель');
+  const done = store.getOrder(order.id);
+  assert.equal(done.status, 'details');
+  assert.equal(done.payRub, 5123);
+});
+
+test('quote flow: клиент отказывается от суммы — заявка отменяется с причиной', async () => {
+  const r = await api('/api/orders', { method: 'POST', body: { cryptoAmount: 0.001, currency: 'BTC', wallet: 'bc1' + 'a'.repeat(30) } });
+  const { order: o } = await r.json();
+  await bus.emit('order_event', { order: o, type: 'new' });
+  await click(222, `o:${o.id}:quote`);
+  await text(222, '7 500');
+  assert.equal(store.getOrder(o.id).status, 'quote');
+  const decline = await api(`/api/order/${o.id}/quote-decline`, { method: 'POST' });
+  assert.equal(decline.status, 200);
+  const cancelled = store.getOrder(o.id);
+  assert.equal(cancelled.status, 'cancelled');
+  assert.match(cancelled.cancelReason, /не согласился/i);
+  // Согласиться после отказа нельзя.
+  const accept = await api(`/api/order/${o.id}/quote-accept`, { method: 'POST' });
+  assert.equal(accept.status, 400);
 });
 
 test('blocked admin/client do not prevent other admins or Web App from receiving requisites', async () => {
@@ -274,42 +322,45 @@ test('paid notifications reach every admin; stale amount cannot undo payment; co
   assert.equal(order.status, 'completed');
 });
 
-test('reverse calculator: crypto amount converts to rubles to pay; fee stays hidden', async () => {
-  const s = store.get().settings;
+test('buy order: no rate anywhere — оператор называет рубль в заявке, клиент видит курс только для карты', async () => {
   const wallet = 'bc1' + 'a'.repeat(30);
   const r = await api('/api/orders', { method: 'POST', body: { cryptoAmount: 0.001, currency: 'BTC', wallet } });
   assert.equal(r.status, 200);
   const { order } = await r.json();
   assert.equal(order.crypto, 0.001);
-  assert.equal(order.rub, Math.ceil(0.001 * s.rateBTC - 1e-6));
-  assert.equal(order.rate, s.rateBTC);
-  // Клиенту нигде не светим комиссию и базовые курсы.
-  assert.equal(order.feePercent, undefined);
-  assert.equal(order.baseRateBTC, undefined);
+  assert.equal(order.rub, null, 'сумму в рублях называет оператор');
+  assert.equal(order.rate, null, 'курса в заявке нет');
+  assert.equal(order.status, 'new');
+  // Клиенту нигде не светим курс покупки и комиссию.
   const pub = await (await fetch(`http://127.0.0.1:${server.address().port}/api/settings`)).json();
   assert.equal(pub.feePercent, undefined);
   assert.equal(pub.baseRateBTC, undefined);
   assert.equal(pub.baseRateLTC, undefined);
+  assert.equal(pub.rateBTC, null, 'курс покупки BTC клиенту не отдаём');
+  assert.equal(pub.rateLTC, null, 'курс покупки LTC клиенту не отдаём');
+  for (const dir of pub.rates) {
+    if (dir.direction === 'sell') continue;
+    assert.equal(dir.rate, null, `курс ${dir.key} клиенту не отдаём`);
+  }
+  // Курс карты (продажа) по-прежнему виден — клиент рядовой пользователь, это его выплата.
+  const gift = pub.rates.find((d) => d.key === 'GOOGLE_USD');
+  assert.equal(gift.rate, store.get().settings.rateGOOGLEUSD);
   await bus.emit('order_event', { order: store.getOrder(order.id), type: 'new' });
 });
 
-test('reverse calculator rejects out-of-range and invalid crypto amounts', async () => {
-  const s = store.get().settings;
+test('buy order validation: crypto amount must be a positive finite number; no rub accepted', async () => {
   const wallet = 'ltc1' + 'a'.repeat(30);
-  const tiny = await api('/api/orders', { method: 'POST', body: { cryptoAmount: s.minRub / s.rateLTC / 2, currency: 'LTC', wallet } });
-  assert.equal(tiny.status, 400);
-  const huge = await api('/api/orders', { method: 'POST', body: { cryptoAmount: s.maxRub / s.rateLTC * 2, currency: 'LTC', wallet } });
-  assert.equal(huge.status, 400);
-  for (const bad of [0, -1, 'мусор', '', null]) {
+  for (const bad of [0, -1, 'мусор', '', null, undefined, Infinity]) {
     const res = await api('/api/orders', { method: 'POST', body: { cryptoAmount: bad, currency: 'LTC', wallet } });
-    assert.equal(res.status, 400);
+    assert.equal(res.status, 400, `cryptoAmount=${bad} отклонён`);
   }
-  // Старый формат (только рубли) продолжает работать.
-  const legacy = await api('/api/orders', { method: 'POST', body: { rub: 5000, currency: 'LTC', wallet } });
-  assert.equal(legacy.status, 200);
-  const { order } = await legacy.json();
-  // Выплата округляется вниз до точности сети (8 знаков для LTC).
-  assert.equal(order.crypto, Math.floor((5000 / s.rateLTC) * 1e8) / 1e8);
+  // Предельная сумма выше внутреннего потолка отклоняется.
+  const huge = await api('/api/orders', { method: 'POST', body: { cryptoAmount: 1e12, currency: 'LTC', wallet } });
+  assert.equal(huge.status, 400);
+  const ok = await api('/api/orders', { method: 'POST', body: { cryptoAmount: 0.25, currency: 'LTC', wallet } });
+  assert.equal(ok.status, 200);
+  const { order } = await ok.json();
+  assert.equal(order.crypto, 0.25);
   await bus.emit('order_event', { order: store.getOrder(order.id), type: 'new' });
 });
 
@@ -326,8 +377,11 @@ test('settings expose USDT TRC20/ERC20 rates with per-network fee and no fee lea
   assert.equal(byKey.USDT_TRC20.network, 'TRC20');
   assert.equal(byKey.USDT_TRC20.label, 'USDT TRC20');
   assert.equal(byKey.USDT_ERC20.network, 'ERC20');
-  // USDT-курсы отличаются от BTC-курса и содержат только итоговое значение.
-  assert.ok(byKey.USDT_TRC20.rate > 20 && byKey.USDT_TRC20.rate < 400);
+  // Курс покупки крипты клиенту не отдаём (оператор называет рубль в заявке).
+  assert.equal(byKey.USDT_TRC20.rate, null);
+  assert.equal(byKey.USDT_ERC20.rate, null);
+  // Курс карты виден — это выплата клиенту.
+  assert.equal(byKey.GOOGLE_USD.rate, store.get().settings.rateGOOGLEUSD);
   assert.equal(byKey.USDT_TRC20.feePercent, undefined);
   assert.equal(byKey.USDT_TRC20.baseRateUSDT, undefined);
   // Своя комиссия у каждой сети: ERC20 дороже.
@@ -340,15 +394,15 @@ test('USDT TRC20 order is created with network, rounded crypto and a TRC20 addre
   const s = store.get().settings;
   const r = await api('/api/orders', {
     method: 'POST',
-    body: { rub: 10000, currency: 'USDT', network: 'TRC20', wallet: TRC_WALLET },
+    body: { cryptoAmount: 100, currency: 'USDT', network: 'TRC20', wallet: TRC_WALLET },
   });
   assert.equal(r.status, 200);
   const { order } = await r.json();
   assert.equal(order.currency, 'USDT');
   assert.equal(order.network, 'TRC20');
   assert.equal(order.currencyLabel, 'USDT TRC20');
-  assert.equal(order.rate, s.rateUSDTTRC20);
-  assert.equal(order.crypto, Math.floor((10000 / s.rateUSDTTRC20) * 1e6) / 1e6);
+  assert.equal(order.rate, null, 'курс клиенту не отдаём');
+  assert.equal(order.crypto, 100);
   await bus.emit('order_event', { order: store.getOrder(order.id), type: 'new' });
   assert.ok(calls.some((c) => String(c.text || '').includes('USDT TRC20')), 'карточка админа показывает сеть');
 });
@@ -363,23 +417,23 @@ test('USDT ERC20 order works and supports reverse calculation with 6-decimal pre
   const { order } = await r.json();
   assert.equal(order.network, 'ERC20');
   assert.equal(order.crypto, 45.5);
-  assert.equal(order.rub, Math.ceil(45.5 * s.rateUSDTERC20 - 1e-6));
+  assert.equal(order.rub, null, 'сумму в рублях называет оператор');
   await bus.emit('order_event', { order: store.getOrder(order.id), type: 'new' });
 });
 
 test('wrong network addresses are rejected for USDT and legacy crypto', async () => {
-  const trcAsErc = await api('/api/orders', { method: 'POST', body: { rub: 5000, currency: 'USDT', network: 'ERC20', wallet: TRC_WALLET } });
+  const trcAsErc = await api('/api/orders', { method: 'POST', body: { cryptoAmount: 50, currency: 'USDT', network: 'ERC20', wallet: TRC_WALLET } });
   assert.equal(trcAsErc.status, 400);
   assert.match((await trcAsErc.json()).error, /ERC20/);
-  const ercAsTrc = await api('/api/orders', { method: 'POST', body: { rub: 5000, currency: 'USDT', network: 'TRC20', wallet: ERC_WALLET } });
+  const ercAsTrc = await api('/api/orders', { method: 'POST', body: { cryptoAmount: 50, currency: 'USDT', network: 'TRC20', wallet: ERC_WALLET } });
   assert.equal(ercAsTrc.status, 400);
   assert.match((await ercAsTrc.json()).error, /TRC20/);
-  const noNet = await api('/api/orders', { method: 'POST', body: { rub: 5000, currency: 'USDT', wallet: TRC_WALLET } });
+  const noNet = await api('/api/orders', { method: 'POST', body: { cryptoAmount: 50, currency: 'USDT', wallet: TRC_WALLET } });
   assert.equal(noNet.status, 400);
   assert.match((await noNet.json()).error, /Неизвестная валюта/);
-  const btcOnLtc = await api('/api/orders', { method: 'POST', body: { rub: 5000, currency: 'LTC', wallet: 'bc1' + 'a'.repeat(30) } });
+  const btcOnLtc = await api('/api/orders', { method: 'POST', body: { cryptoAmount: 0.25, currency: 'LTC', wallet: 'bc1' + 'a'.repeat(30) } });
   assert.equal(btcOnLtc.status, 400);
-  const spaces = await api('/api/orders', { method: 'POST', body: { rub: 5000, currency: 'USDT', network: 'TRC20', wallet: 'T ' + TRC_WALLET.slice(2) } });
+  const spaces = await api('/api/orders', { method: 'POST', body: { cryptoAmount: 50, currency: 'USDT', network: 'TRC20', wallet: 'T ' + TRC_WALLET.slice(2) } });
   assert.equal(spaces.status, 400);
 });
 
@@ -390,7 +444,7 @@ test('disabled directions cannot be ordered and old orders without network stay 
   const pub = await (await fetch(`http://127.0.0.1:${server.address().port}/api/settings`)).json();
   assert.equal(pub.rates.find((r) => r.key === 'USDT_ERC20').enabled, false);
   assert.equal(pub.rates.find((r) => r.key === 'USDT_ERC20').rate, null);
-  const denied = await api('/api/orders', { method: 'POST', body: { rub: 5000, currency: 'USDT', network: 'ERC20', wallet: ERC_WALLET } });
+  const denied = await api('/api/orders', { method: 'POST', body: { cryptoAmount: 50, currency: 'USDT', network: 'ERC20', wallet: ERC_WALLET } });
   assert.equal(denied.status, 400);
   await click(111, 's:dir_USDT_ERC20');
   assert.equal(currencies.isEnabled(store.get().settings, 'USDT_ERC20'), true);
@@ -412,7 +466,7 @@ test('admin can turn off BTC and LTC exchange per product from settings', async 
   const pub = await (await fetch(`http://127.0.0.1:${server.address().port}/api/settings`)).json();
   assert.equal(pub.rates.find((r) => r.key === 'BTC').enabled, false);
   assert.equal(pub.rates.find((r) => r.key === 'BTC').rate, null);
-  const denied = await api('/api/orders', { method: 'POST', body: { rub: 5000, currency: 'BTC', wallet: 'bc1' + 'a'.repeat(30) } });
+  const denied = await api('/api/orders', { method: 'POST', body: { cryptoAmount: 0.001, currency: 'BTC', wallet: 'bc1' + 'a'.repeat(30) } });
   assert.equal(denied.status, 400);
   assert.match((await denied.json()).error, /BTC/);
   const kbOff = JSON.stringify((calls.find((c) => c.method === 'editMessageText') || {}).reply_markup || {});
@@ -420,7 +474,7 @@ test('admin can turn off BTC and LTC exchange per product from settings', async 
   // Выключаем LTC — заявки не принимаются.
   await click(111, 's:dir_LTC');
   assert.equal(store.get().settings.enabled.LTC, false);
-  const deniedLtc = await api('/api/orders', { method: 'POST', body: { rub: 5000, currency: 'LTC', wallet: 'ltc1' + 'a'.repeat(30) } });
+  const deniedLtc = await api('/api/orders', { method: 'POST', body: { cryptoAmount: 0.25, currency: 'LTC', wallet: 'ltc1' + 'a'.repeat(30) } });
   assert.equal(deniedLtc.status, 400);
   // Включаем обратно — обмен снова работает.
   await click(111, 's:dir_BTC');
@@ -446,17 +500,20 @@ test('operator changes USDT commissions independently; TRC20 and ERC20 rates rec
     assert.equal(s.rateUSDTTRC20, Math.round(s.baseRateUSDT * 1.07 * 100) / 100);
     assert.equal(s.rateUSDTERC20, Math.round(s.baseRateUSDT * 1.09 * 100) / 100);
   }
-  // Ручной курс USDT применяется на сайте сразу.
+  // Ручной курс USDT применяется для оператора/бота, но клиенту курс покупки не отдаём.
   await click(111, 's:rate_trc20');
   await text(111, '98,75');
   assert.equal(store.get().settings.rateUSDTTRC20, 98.75);
   const pub = await (await fetch(`http://127.0.0.1:${server.address().port}/api/settings`)).json();
-  assert.equal(pub.rates.find((r) => r.key === 'USDT_TRC20').rate, 98.75);
+  assert.equal(pub.rates.find((r) => r.key === 'USDT_TRC20').rate, null, 'курс покупки клиенту не отдаём');
 });
 
 test('USDT receipt, payment and completion flow uses 2-decimal display and correct direction', async () => {
-  const o = (await (await api('/api/orders', { method: 'POST', body: { rub: 8000, currency: 'USDT', network: 'TRC20', wallet: TRC_WALLET } })).json()).order;
+  const o = (await (await api('/api/orders', { method: 'POST', body: { cryptoAmount: 80, currency: 'USDT', network: 'TRC20', wallet: TRC_WALLET } })).json()).order;
   await bus.emit('order_event', { order: store.getOrder(o.id), type: 'new' });
+  await click(222, `o:${o.id}:quote`);
+  await text(222, '8 000');
+  await api(`/api/order/${o.id}/quote-accept`, { method: 'POST' });
   await click(222, `o:${o.id}:req`);
   calls = [];
   await text(222, 'Т-Банк: +7 900 000-00-00');
@@ -793,6 +850,53 @@ test('admin changes the support chat link from the app; clients see it live', as
   const restore = await api('/api/admin/settings/chat', { id: 111, method: 'POST', body: { chat: 'https://t.me/+tY5b6RUJ0xUwNmNh' } });
   assert.equal(restore.status, 200);
   assert.equal(store.get().settings.chat, 'https://t.me/+tY5b6RUJ0xUwNmNh');
+});
+
+test('admin settings endpoint: directions toggle, fees and gift card config; clients get 403', async () => {
+  // Обычный клиент — 403.
+  const forbidden = await api('/api/admin/settings', { method: 'POST', body: { feePercent: 5 } });
+  assert.equal(forbidden.status, 403);
+  const forbiddenGet = await api('/api/admin/settings');
+  assert.equal(forbiddenGet.status, 403);
+  // Админ (111) читает текущие настройки.
+  const before = await (await api('/api/admin/settings', { id: 111 })).json();
+  const oldFee = before.admin.feePercent;
+  const oldTrc = before.admin.feePercentUSDTTRC20;
+  const oldErc = before.admin.feePercentUSDTERC20;
+  const oldGift = before.admin.giftPercent;
+  const oldGoogle = before.admin.rateGOOGLEUSD;
+  // Выключаем ERC20 через веб-API.
+  const toggled = await api('/api/admin/settings', { id: 111, method: 'POST', body: { enabled: { USDT_ERC20: false } } });
+  assert.equal(toggled.status, 200);
+  assert.equal((await toggled.json()).admin.directions.USDT_ERC20, false);
+  assert.equal(currencies.isEnabled(store.get().settings, 'USDT_ERC20'), false);
+  // Комиссии BTC/LTC — 9% (максимум), проверяем валидацию и пересчёт.
+  const badFee = await api('/api/admin/settings', { id: 111, method: 'POST', body: { feePercent: 80 } });
+  assert.equal(badFee.status, 400);
+  const feeOk = await api('/api/admin/settings', { id: 111, method: 'POST', body: { feePercent: 9, feePercentUSDTTRC20: 3 } });
+  assert.equal(feeOk.status, 200);
+  // Карта: комиссия 15% → курс пересчитывается из неё.
+  const gift = await api('/api/admin/settings', { id: 111, method: 'POST', body: { giftPercent: 15 } });
+  const giftBody = await gift.json();
+  assert.equal(giftBody.admin.giftPercent, 15);
+  assert.equal(giftBody.admin.rateGOOGLEUSD, 0.85);
+  // Ручной курс карты перекрывает расчётный.
+  const manual = await api('/api/admin/settings', { id: 111, method: 'POST', body: { rateGOOGLEUSD: 0.9 } });
+  assert.equal((await manual.json()).admin.rateGOOGLEUSD, 0.9);
+  const badGift = await api('/api/admin/settings', { id: 111, method: 'POST', body: { rateGOOGLEUSD: 500 } });
+  assert.equal(badGift.status, 400);
+  const badDir = await api('/api/admin/settings', { id: 111, method: 'POST', body: { enabled: { NOPE: true } } });
+  assert.equal(badDir.status, 400);
+  // Чисто текстовые ошибки тоже отклоняются.
+  const nothing = await api('/api/admin/settings', { id: 111, method: 'POST', body: {} });
+  assert.equal(nothing.status, 400);
+  // Возвращаем исходные настройки.
+  await api('/api/admin/settings', { id: 111, method: 'POST', body: { enabled: { USDT_ERC20: true }, feePercent: oldFee ?? 0, feePercentUSDTTRC20: oldTrc ?? 0, feePercentUSDTERC20: oldErc ?? 0, giftPercent: oldGift ?? 0, rateGOOGLEUSD: oldGoogle ?? 1 } });
+  assert.equal(currencies.isEnabled(store.get().settings, 'USDT_ERC20'), true);
+  assert.equal(store.get().settings.feePercent, oldFee ?? 0);
+  assert.equal(store.get().settings.feePercentUSDTTRC20, oldTrc ?? 0);
+  assert.equal(store.get().settings.giftPercent, oldGift ?? 0);
+  assert.equal(store.get().settings.rateGOOGLEUSD, oldGoogle ?? 1);
 });
 
 test('disabled gift direction rejects new cards but keeps old orders', async () => {

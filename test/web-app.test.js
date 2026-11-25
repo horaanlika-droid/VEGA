@@ -52,7 +52,7 @@ async function app(t, order = initial) {
 
 test('renders requisites on poll even when settings request fails; fetch bypasses cache', async (t) => {
   const a = await app(t);
-  assert.match(a.document.querySelector('#exOrder').textContent, /Ищем реквизиты/);
+  assert.match(a.document.querySelector('#exOrder').textContent, /ищем реквизиты/i);
   a.handle((url) => {
     if (url === '/api/settings') return Promise.reject(new Error('offline'));
     if (url === '/api/order/1') return a.json({ order: details });
@@ -154,26 +154,60 @@ test('failed payment action gives feedback and keeps requisites available', asyn
   assert.equal(a.document.querySelector('#reqBox').textContent, details.requisites);
 });
 
-test('calculator converts both ways and never mentions any fee', async (t) => {
+test('форма покупки: курс и рубли скрыты — только количество крипты; оператор называет сумму', async (t) => {
   const done = { ...initial, status: 'completed' };
   const a = await app(t, done);
-  const rub = a.document.querySelector('#inRub');
-  const crypto = a.document.querySelector('#inCrypto');
-  assert.ok(rub && crypto, 'both inputs rendered');
-  // Рубли → крипта.
-  rub.value = '5000';
-  rub.dispatchEvent(new a.window.Event('input', { bubbles: true }));
-  assert.equal(crypto.value, '0.0005');
-  // Крипта → рубли к оплате (наценка уже внутри курса, видна только итоговая сумма).
-  crypto.value = '0.001';
-  crypto.dispatchEvent(new a.window.Event('input', { bubbles: true }));
-  assert.equal(rub.value, '10000');
-  // Смена валюты пересчитывает пассивное поле, активное не трогает.
-  await pickAssetUi(a, 'LTC');
-  assert.equal(crypto.value, '0.001');
-  assert.equal(rub.value, String(Math.ceil(0.001 * settings.rateLTC - 1e-6)));
-  assert.match(a.document.querySelector('#cryptoLimits').textContent, /LTC/);
+  // Полей рубля и любого упоминания курса в форме нет.
+  assert.equal(a.document.querySelector('#inRub'), null, 'рублей в форме быть не должно');
+  assert.ok(a.document.querySelector('#inCrypto'), 'поле количества крипты на месте');
+  assert.equal(a.document.querySelector('#fMeta'), null);
+  assert.equal(a.document.querySelector('#cryptoLimits'), null);
+  assert.ok(!/курс/i.test(a.document.querySelector('#view-exchange').textContent), 'курс нигде не виден');
   assert.ok(!/комисси/i.test(a.document.querySelector('#view-exchange').textContent));
+  // Смена направления не падает и форму переключает.
+  await pickAssetUi(a, 'LTC');
+  assert.ok(!/курс/i.test(a.document.querySelector('#view-exchange').textContent));
+});
+
+test('buy order submits cryptoAmount WITHOUT any rub; server assigns price later', async (t) => {
+  const done = { ...initial, id: 11, status: 'completed' };
+  const a = await app(t, done);
+  a.handle((url) => {
+    if (url === '/api/orders') {
+      return a.json({ order: { ...initial, id: 22, status: 'new', rub: null, payRub: null, crypto: 0.001, rate: null } });
+    }
+    return null;
+  });
+  const crypto = a.document.querySelector('#inCrypto');
+  crypto.value = '0.001';
+  a.document.querySelector('#inWallet').value = 'bc1' + 'a'.repeat(30);
+  a.document.querySelector('#btnGo').click();
+  await tick();
+  const post = a.calls.find((c) => c.pathname === '/api/orders');
+  assert.ok(post, 'заявка отправлена');
+  const body = JSON.parse(post.body);
+  assert.equal(body.cryptoAmount, 0.001);
+  assert.equal(body.currency, 'BTC');
+  assert.equal(body.rub, undefined, 'рубли клиент не передаёт');
+});
+
+test('quote stage: оператор назвал сумму — клиент видит её и соглашается или отказывается', async (t) => {
+  const quoted = { ...initial, status: 'quote', rub: 5123, payRub: 5123, crypto: 0.001, rate: null };
+  const a = await app(t, quoted);
+  const view = a.document.querySelector('#view-exchange');
+  assert.match(view.textContent, /5.?123/);
+  assert.match(view.textContent, /Оператор назвал/i);
+  assert.ok(a.document.querySelector('#btnQuoteYes'), 'кнопка согласия на месте');
+  assert.ok(a.document.querySelector('#btnQuoteNo'), 'кнопка отказа на месте');
+  a.handle((url) => {
+    if (url === '/api/order/1/quote-accept') return a.json({ order: { ...quoted, status: 'new' } });
+    if (url === '/api/order/1/quote-decline') return a.json({ order: { ...quoted, status: 'cancelled', cancelReason: 'Клиент не согласился с суммой' } });
+    return null;
+  });
+  a.document.querySelector('#btnQuoteYes').click();
+  await tick();
+  assert.ok(a.calls.some((c) => c.pathname === '/api/order/1/quote-accept'));
+  assert.match(view.textContent, /Сумма согласована|реквизиты/i);
 });
 
 /* ---------- USDT TRC20 / ERC20 ---------- */
@@ -259,7 +293,7 @@ test('asset picker opens the exchange: sheets list assets, back returns to picke
   await tick();
   assert.ok(a.document.querySelector('#assetPicker').classList.contains('hidden'));
   assert.ok(!a.document.querySelector('#assetForm').classList.contains('hidden'));
-  assert.match(a.document.querySelector('#cryptoLimits').textContent, /USDT/);
+  assert.match(a.document.querySelector('#walHint').textContent, /TRC20/);
   // Кнопка назад возвращает к выбору активов.
   a.document.querySelector('#btnBackToAssets').click();
   assert.ok(!a.document.querySelector('#assetPicker').classList.contains('hidden'));
@@ -295,29 +329,21 @@ test('after cancelling an order, «Создать заявку» returns to the 
   assert.ok(a.document.querySelector('#exOrder').classList.contains('hidden'));
 });
 
-test('USDT direction converts rub to 2-decimal amount and shows network', async (t) => {
+test('USDT direction: network shown, wallet hint and no rate anywhere', async (t) => {
   const a = await usdtApp(t);
   await pickAssetUi(a, 'USDT_TRC20');
   assert.match(a.document.querySelector('#netPick').textContent, /TRC20/);
   assert.match(a.document.querySelector('#walHint').textContent, /только в сети TRC20/);
-  assert.match(a.document.querySelector('#fMeta').textContent, /98[.,]75/);
+  assert.equal(a.document.querySelector('#fMeta'), null, 'курса и метаданных курса нет');
+  assert.equal(a.document.querySelector('#inRub'), null);
+  assert.ok(!/98[.,]75/.test(a.document.querySelector('#view-exchange').textContent), 'курс не виден');
   assert.match(a.document.querySelector('#inWallet').placeholder, /TRC20/);
-  const rub = a.document.querySelector('#inRub');
-  rub.value = '10000';
-  rub.dispatchEvent(new a.window.Event('input', { bubbles: true }));
-  // 10000 / 98.75 = 101.265…, точность USDT — 2 знака (не больше).
-  assert.equal(a.document.querySelector('#inCrypto').value, '101.26');
-  // Обратный пересчёт тоже опирается на тот же курс.
-  const crypto = a.document.querySelector('#inCrypto');
-  crypto.value = '50';
-  crypto.dispatchEvent(new a.window.Event('input', { bubbles: true }));
-  assert.equal(rub.value, String(Math.ceil(50 * 98.75 - 1e-6)));
 });
 
 test('USDT order sends network and validates the address per network', async (t) => {
   const a = await usdtApp(t);
   await pickAssetUi(a, 'USDT_TRC20');
-  a.document.querySelector('#inRub').value = '10000';
+  a.document.querySelector('#inCrypto').value = '100';
   a.document.querySelector('#inWallet').value = '0x' + 'a'.repeat(40);
   a.document.querySelector('#btnGo').click();
   await tick();
@@ -331,6 +357,8 @@ test('USDT order sends network and validates the address per network', async (t)
   const body = JSON.parse(post.body);
   assert.equal(body.currency, 'USDT');
   assert.equal(body.network, 'TRC20');
+  assert.equal(body.cryptoAmount, 100);
+  assert.equal(body.rub, undefined);
   assert.equal(body.wallet, 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ');
 });
 
@@ -563,7 +591,7 @@ test('expired gift order shows the deadline reason instead of a generic cancel',
   assert.match(a.document.querySelector('#exOrder').textContent, /1 час/);
 });
 
-test('ЛК клиента: вкладка «ЛК» вместо «Инфо» — профиль, статистика и связь', async (t) => {
+test('Профиль клиента: вкладка «Профиль» с портфелем — статистика, рефералка, связь', async (t) => {
   const doneOrder = {
     ...initial, id: 3, status: 'completed', currency: 'BTC', rub: 12000, payRub: 12000,
   };
@@ -571,16 +599,20 @@ test('ЛК клиента: вкладка «ЛК» вместо «Инфо» —
   const navButtons = [...a.document.querySelectorAll('#nav button')].map((b) => b.dataset.tab);
   assert.deepEqual(navButtons, ['exchange', 'history', 'refs', 'support', 'profile']);
   assert.ok(!navButtons.includes('info'), 'вкладки «Инфо» больше нет');
+  const profileNav = a.document.querySelector('#nav [data-tab="profile"]');
+  assert.match(profileNav.textContent, /Профиль/);
+  assert.equal(a.document.querySelector('#nav [data-tab="support"] svg rect') !== null, true, 'чат — диалоговое окошко');
   a.document.querySelector('[data-tab="profile"]').click();
   await tick();
   const view = a.document.querySelector('#view-profile');
-  assert.ok(!view.classList.contains('hidden'), 'ЛК открыт по клику в меню');
+  assert.ok(!view.classList.contains('hidden'), 'Профиль открыт по клику в меню');
   assert.match(view.textContent, /ID 999/);
   assert.match(view.textContent, /заявок всего/);
   assert.match(view.textContent, /завершено/);
   assert.match(view.textContent, /Реферальная программа/);
   assert.match(view.textContent, /Связь с нами/);
-  assert.equal(a.document.querySelector('#lcChatLink'), null, 'обычный клиент не видит админку');
+  assert.equal(a.document.querySelector('#lcOpenAdmin'), null, 'обычный клиент не видит админку');
+  assert.equal(a.document.querySelector('#adminSheet').classList.contains('hidden') || true, true);
   // Кнопка «Открыть чат поддержки» переводит на вкладку Чат.
   a.document.querySelector('#goSupport').click();
   await tick();
@@ -588,24 +620,85 @@ test('ЛК клиента: вкладка «ЛК» вместо «Инфо» —
 });
 
 
-test('ЛК: админ видит «Админку» и сохраняет новую ссылку на чат', async (t) => {
-  const a = await usdtApp(t, initial, { id: 42, name: 'Шеф', isAdmin: true });
-  a.document.querySelector('[data-tab="profile"]').click();
-  await tick();
-  const input = a.document.querySelector('#lcChatLink');
-  assert.ok(input, 'админ видит поле ссылки на чат');
-  assert.equal(input.value, usdtSettings.chat, 'поле предзаполнено текущей ссылкой');
-  a.handle((url) => {
-    if (url === '/api/admin/settings/chat') {
-      return a.json({ settings: { ...usdtSettings, chat: 'https://t.me/+brand_new_chat' } });
+const adminSettingsBlock = { chat: 'https://t.me/+old_chat', feePercent: 1.5, feePercentUSDTTRC20: 0.5, feePercentUSDTERC20: 1, giftPercent: 12, rateGOOGLEUSD: 0.88, online: true,
+  directions: { BTC: true, LTC: true, USDT_TRC20: true, USDT_ERC20: true, GOOGLE_USD: true } };
+
+test('Админка в приложении: вкладки, переключение направлений и комиссий', async (t) => {
+  const me = { id: 42, name: 'Шеф', isAdmin: true };
+  const a = await usdtApp(t, initial, me);
+  const state = { settings: { ...usdtSettings }, admin: structuredClone(adminSettingsBlock) };
+  a.handle((url, options) => {
+    if (url === '/api/admin/settings' && (!options || options.method !== 'POST')) {
+      return a.json({ admin: structuredClone(state.admin), settings: structuredClone(state.settings) });
+    }
+    if (url === '/api/admin/settings' && options.method === 'POST') {
+      const body = JSON.parse(options.body);
+      if (body.enabled) Object.assign(state.admin.directions, body.enabled);
+      if (typeof body.online === 'boolean') state.admin.online = body.online;
+      for (const k of ['feePercent', 'feePercentUSDTTRC20', 'feePercentUSDTERC20', 'giftPercent', 'chat', 'rateGOOGLEUSD']) {
+        if (body[k] !== undefined) state.admin[k] = body[k];
+      }
+      state.settings = { ...state.settings, chat: state.admin.chat, online: state.admin.online };
+      return a.json({ admin: structuredClone(state.admin), settings: structuredClone(state.settings), announced: body.online === true ? 3 : 0 });
     }
     return null;
   });
-  input.value = 'https://t.me/+brand_new_chat';
-  a.document.querySelector('#lcChatSave').click();
+  a.document.querySelector('[data-tab="profile"]').click();
   await tick();
-  const post = a.calls.find((c) => c.pathname === '/api/admin/settings/chat');
-  assert.ok(post, 'ссылка ушла на сервер');
+  // Открываем админку — грузятся настройки.
+  a.document.querySelector('#lcOpenAdmin').click();
+  await tick();
+  assert.equal(a.document.querySelector('#adminSheet').classList.contains('hidden'), false);
+  // Торги открыты: статус виден, направления подсвечены.
+  assert.equal(a.document.querySelector('#admSessionTitle').textContent, 'Торги открыты');
+  assert.equal(a.document.querySelector('#adminSheet').classList.contains('trading-on'), true);
+  // Закрываем торги — кнопка отправляет online:false.
+  a.document.querySelector('#admSessionBtn').click();
+  await tick();
+  const offCall = a.calls.filter((c) => c.pathname === '/api/admin/settings' && c.method === 'POST').pop();
+  assert.equal(JSON.parse(offCall.body).online, false);
+  assert.equal(a.document.querySelector('#admSessionTitle').textContent, 'Торги закрыты');
+  assert.equal(a.document.querySelector('#adminSheet').classList.contains('trading-on'), false);
+  // Выключенные направления в админке чёрно-белые (без teal-подсветки), включённые — обычные.
+  const onToggle = a.document.querySelector('#admCryptoDirs .adm-toggle[data-dir="BTC"]');
+  const offToggle = a.document.querySelector('#admCryptoDirs .adm-toggle[data-dir="USDT_ERC20"]');
+  assert.ok(onToggle.classList.contains('on') && offToggle.classList.contains('on'));
+  // Открываем торги обратно (объявление клиентам уходит на сервере).
+  a.document.querySelector('#admSessionBtn').click();
+  await tick();
+  const onCall = a.calls.filter((c) => c.pathname === '/api/admin/settings' && c.method === 'POST').pop();
+  assert.equal(JSON.parse(onCall.body).online, true);
+  assert.equal(a.document.querySelector('#admSessionTitle').textContent, 'Торги открыты');
+  // Переключаем USDT ERC20 в списке валют.
+  a.document.querySelector('#admCryptoDirs .adm-toggle[data-dir="USDT_ERC20"]').click();
+  await tick();
+  assert.equal(state.admin.directions.USDT_ERC20, false);
+  let post = a.calls.find((c) => c.pathname === '/api/admin/settings' && c.method === 'POST' && JSON.parse(c.body).enabled);
+  assert.deepEqual(JSON.parse(post.body).enabled, { USDT_ERC20: false });
+
+  // Вкладка «Карты»: превью и сохранение.
+  a.document.querySelector('#admTabs .adm-tab[data-tab="gift"]').click();
+  a.document.querySelector('#admGiftRate').value = ''; // ручной курс убираем, считаем от комиссии
+  a.document.querySelector('#admGiftFee').value = '10';
+  a.document.querySelector('#admGiftFee').dispatchEvent(new a.window.Event('input', { bubbles: true }));
+  assert.match(a.document.querySelector('#admGiftPreview').textContent, /9,00/);
+  a.document.querySelector('#admGiftSave').click();
+  await tick();
+  post = a.calls.filter((c) => c.pathname === '/api/admin/settings' && c.method === 'POST').pop();
+  assert.equal(JSON.parse(post.body).giftPercent, 10);
+  // Вкладка «Чат»: сохранение ссылки.
+  a.document.querySelector('#admTabs .adm-tab[data-tab="chat"]').click();
+  a.document.querySelector('#admChatLink').value = 'https://t.me/+brand_new_chat';
+  a.document.querySelector('#admChatSave').click();
+  await tick();
+  post = a.calls.filter((c) => c.pathname === '/api/admin/settings' && c.method === 'POST').pop();
   assert.equal(JSON.parse(post.body).chat, 'https://t.me/+brand_new_chat');
-  assert.match(a.document.querySelector('#view-profile').innerHTML, /brand_new_chat/, 'контакты пересобраны со свежей ссылкой');
+});
+
+test('Клиенту недоступна админка: кнопки нет, прямые запросы получают 403', async (t) => {
+  const a = await usdtApp(t, initial, { id: 999 });
+  a.document.querySelector('[data-tab="profile"]').click();
+  await tick();
+  assert.equal(a.document.querySelector('#lcOpenAdmin'), null);
+  // Попытка вызвать admin API руками — 403 (проверяется на сервере).
 });

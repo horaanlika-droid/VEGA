@@ -10,6 +10,7 @@ const receipts = require('./receipts');
 const currencies = require('./currencies');
 const { esc, fmtRub, fmtCrypto, fmtDate, parseNum } = require('./util');
 const widget = require('./widget');
+const quoteOps = require('./quote');
 
 const clientFlows = new Map(); // userId -> FSM state
 const isPrivate = (ctx) => ctx.chat?.type === 'private' && ctx.from;
@@ -18,12 +19,6 @@ const isGiftOrder = (o) => o && (o.direction === 'sell' || currencies.isGift(o.c
 const giftUnits = (o) => Number(o.units) || 0;
 const payoutOf = (o, amount = o.crypto) =>
   `${fmtCrypto(amount, 'USDT', 2)} (${o.network || 'USDT'})`;
-// Курс для подписей: 100 — без копеек, 98.75 — с ними.
-const rateFmt = (n) => {
-  const v = Number(n) || 0;
-  const txt = v >= 1000 ? Math.round(v).toLocaleString('ru-RU') : v.toFixed(2).replace(/\.?0+$/, '');
-  return `${txt} ₽`;
-};
 
 /* ---------- контент ---------- */
 
@@ -119,51 +114,49 @@ function assetScreen(ctx) {
 /* ---------- заявка: покупка крипты за рубли ---------- */
 
 function buyPrompt(ctx, pair) {
-  const s = store.get().settings;
-  const rate = currencies.rateOf(s, pair.currency, pair.network);
-  clientFlows.set(uidOf(ctx), { type: 'rub', key: pair.key });
+  clientFlows.set(uidOf(ctx), { type: 'crypto', key: pair.key });
   const sub = pair.network ? ` · сеть ${pair.network}` : '';
   return show(ctx,
-    `${pair.symbol} <b>${esc(pair.label)}</b>${esc(sub)}\n1 ${esc(pair.currency)} = ${esc(rateFmt(rate))}\n\n` +
+    `${pair.symbol} <b>${esc(pair.label)}</b>${esc(sub)}\n\n` +
     `Вы отдаёте рубли, получаете ${esc(pair.label)}.\n` +
-    `Сколько рублей обмениваем? <b>От ${fmtRub(s.minRub)} до ${fmtRub(s.maxRub)}.</b>\n\n` +
+    `Стоимость в рублях назовёт оператор после заявки — вы увидите её и согласитесь или откажетесь.\n\n` +
+    `Сколько ${esc(pair.label)} хотите получить? Отправьте число (например <b>0.001</b>):\n\n` +
     `/cancel — отмена`,
     new InlineKeyboard().text('↩️ К выбору актива', 'c:exchange'));
 }
 
-function buySummary(ctx, pair, rub) {
-  const s = store.get().settings;
-  const rate = currencies.rateOf(s, pair.currency, pair.network);
-  const crypto = Math.floor((rub / rate) * 10 ** pair.decimals + 1e-6) / 10 ** pair.decimals;
-  clientFlows.set(uidOf(ctx), { type: 'confirm_buy', key: pair.key, rub });
+function buySummary(ctx, pair, crypto) {
+  clientFlows.set(uidOf(ctx), { type: 'confirm_buy', key: pair.key, crypto });
+  const amount = fmtCrypto(crypto, pair.currency, currencies.displayDecimals(pair.currency, pair.network));
   return show(ctx,
     `💱 <b>Проверьте заявку</b>\n\n` +
-    `Вы отдаёте: <b>${fmtRub(rub)}</b>\n` +
-    `Вы получаете: <b>≈ ${fmtCrypto(crypto, pair.currency, currencies.displayDecimals(pair.currency, pair.network))}</b>\n` +
-    `Курс: 1 ${esc(pair.currency)} = ${esc(rateFmt(rate))} (комиссия уже включена)\n\n` +
+    `Вы получаете: <b>${esc(amount)}</b>\n` +
+    `Стоимость в рублях назовёт оператор — заявка уйдёт ему на рассмотрение.\n` +
+    `<b>Ничего не переводите</b>, пока не согласитесь с суммой.\n\n` +
     `Оформляем?`,
     new InlineKeyboard()
       .text('✅ Оформить заявку', 'c:ok_buy').row()
       .text('✏️ Изменить сумму', 'c:change_buy').text('↩️ К активам', 'c:exchange'));
 }
 
-function createBuyOrder(ctx, pair, rub, wallet) {
+function createBuyOrder(ctx, pair, crypto, wallet) {
   const s = store.get().settings;
-  const rate = currencies.rateOf(s, pair.currency, pair.network);
-  if (!s.online || !rate || !currencies.isEnabled(s, pair.key)) return null; // направление выключили между шагами
+  if (!s.online || !currencies.isEnabled(s, pair.key)) return null; // направление выключили между шагами
   const floorCrypto = (v) => Math.floor(v * 10 ** pair.decimals + 1e-6) / 10 ** pair.decimals;
+  const amount = floorCrypto(Number(crypto));
+  if (!(amount > 0)) return null;
   const usr = ensureUser(ctx);
   const order = store.createOrder({
     userId: uidOf(ctx),
     userName: ctx.from.first_name || 'Клиент',
     userUsername: ctx.from.username || null,
     direction: 'buy',
-    rub,
+    rub: null,
     currency: pair.currency,
     network: pair.network || undefined,
     wallet,
-    rate,
-    crypto: floorCrypto(rub / rate),
+    rate: null,
+    crypto: amount,
     referrer: usr && usr.referrer,
   });
   bus.emit('order_event', { order, type: 'new' });
@@ -250,6 +243,7 @@ function createGiftOrder(ctx, units, wallet) {
 /* ---------- «Мои заявки» ---------- */
 
 const statusIcon = (o) => {
+  if (o.status === 'quote') return '💰';
   if (o.status === 'completed') return '🟢';
   if (o.status === 'rejected' || o.status === 'cancelled') return '⚪';
   if (o.status === 'paid') return '⏳';
@@ -298,12 +292,15 @@ const orderActionsKb = (o) => {
   } else if (o.status === 'new' && isGiftOrder(o)) {
     if (o.giftCode) kb.text('✅ Я оплатил', `c:paid:${o.id}`); // совместимость со старыми заявками
     else kb.text('🔄 Обновить', `c:order:${o.id}`);
+  } else if (o.status === 'quote') {
+    kb.text('✅ Согласен, продолжить', `c:quote:${o.id}:yes`).row()
+      .text('❌ Отказаться', `c:quote:${o.id}:no`);
   } else if (o.status === 'new') {
     kb.text('🔄 Обновить', `c:order:${o.id}`);
   } else if (o.status === 'paid') {
     kb.text('🔄 Обновить', `c:order:${o.id}`);
   }
-  if (['new', 'details'].includes(o.status)) kb.text('❌ Отменить', `c:cancel:${o.id}`);
+  if (['new', 'details', 'quote'].includes(o.status)) kb.text('❌ Отменить', `c:cancel:${o.id}`);
   kb.row().text('📦 К заявкам', 'c:orders').text('↩️ В меню', 'c:menu');
   return kb;
 };
@@ -350,7 +347,16 @@ function orderDetailText(o) {
   const label = currencies.label(o.currency, o.network);
   const amount = fmtCrypto(o.crypto, o.currency, currencies.displayDecimals(o.currency, o.network));
   if (o.status === 'new') {
-    return head + `${fmtRub(o.rub)} → <b>${esc(label)}</b> (≈ ${esc(amount)})\n\n🔍 Ищем реквизиты — обычно меньше минуты. Реквизиты придут сюда, не закрывайте чат.`;
+    if (!(o.payRub || o.rub)) {
+      return head + `<b>${esc(amount)}</b> (${esc(label)})\n\n⏳ Оператор изучает заявку — скоро назовёт сумму в рублях. Мы ничего не переводим, пока вы не согласитесь с суммой.`;
+    }
+    return head + `${fmtRub(o.payRub || o.rub)} → <b>${esc(label)}</b> (≈ ${esc(amount)})\n\n🔍 Сумма согласована — ищем реквизиты, обычно меньше минуты. Реквизиты придут сюда, не закрывайте чат.`;
+  }
+  if (o.status === 'quote') {
+    return head +
+      `💰 <b>Оператор назвал сумму к оплате</b>\n\n` +
+      `<b>${esc(amount)}</b> (${esc(label)}) = <b>${fmtRub(o.payRub || o.rub)}</b>\n\n` +
+      `Продолжим сделку только с вашего согласия. Если сумма не подходит — откажитесь, заявка отменится.`;
   }
   if (o.status === 'details') {
     return head +
@@ -423,14 +429,9 @@ async function clientCancel(ctx, id) {
 
 function infoScreen(ctx) {
   const s = store.get().settings;
-  const rateLine = currencies.list()
-    .filter((p) => p.direction !== 'sell' && currencies.isEnabled(s, p.key) && Number(s[p.rateKey]) > 0)
-    .map((p) => `${p.symbol} ${p.label}: ${rateFmt(s[p.rateKey])}`)
-    .join('\n');
   return show(ctx,
     `ℹ️ <b>VEGA | Official</b>\n\n` +
-    `${rateLine}\n\n` +
-    `Лимиты: <b>${fmtRub(s.minRub)} — ${fmtRub(s.maxRub)}</b>\n` +
+    `Стоимость обмена в рублях оператор называет в заявке — вы всегда соглашаетесь с суммой до оплаты.\n\n` +
     `Статус: ${s.online ? '🟢 Онлайн' : '🔴 Оффлайн'}\n` +
     `${s.announcement ? `📢 ${esc(s.announcement)}\n\n` : '\n'}` +
     `📇 Оператор: ${esc(s.operator)}\n📣 Канал: ${esc(s.channel)}\n💬 Чат: ${esc(s.chat)}`,
@@ -504,6 +505,20 @@ async function clientStart(ctx, refParam = '') {
 async function handleClientCallback(ctx, d) {
   if (!isPrivate(ctx)) return ctx.answerCallbackQuery({ text: '' }).catch(() => {});
   await ctx.answerCallbackQuery().catch(() => {});
+  const mq = d.match(/^c:quote:(\d+):(yes|no)$/);
+  if (mq) {
+    const o = await loadOwnOrder(ctx, Number(mq[1]));
+    if (!o) return show(ctx, '🚫 Заявка не найдена.', backMenuKb());
+    if (o.status !== 'quote') {
+      return show(ctx, `ℹ️ По заявке <b>#${o.id}</b> уже есть решение — откройте её в списке.`, new InlineKeyboard().text('📦 Мои заявки', 'c:orders').text('↩️ В меню', 'c:menu'));
+    }
+    if (mq[2] === 'yes') {
+      const upd = quoteOps.acceptQuote(o.id);
+      return show(ctx, `✅ <b>Сумма ${fmtRub(upd.payRub || upd.rub)} согласована.</b>\nОператор пришлёт реквизиты в ближайшее время — ожидайте в этом чате и в приложении.`, new InlineKeyboard().text('📦 Мои заявки', 'c:orders').text('↩️ В меню', 'c:menu'));
+    }
+    quoteOps.declineQuote(o.id);
+    return show(ctx, `⚪ <b>Заявка #${o.id} отменена</b> — вы отказались от предложенной суммы.\nСоздать новую заявку можно в любой момент.`, new InlineKeyboard().text('💱 Новый обмен', 'c:exchange').text('↩️ В меню', 'c:menu'));
+  }
   if (d === 'c:menu') return clientMenu(ctx);
   if (d === 'c:exchange') return assetScreen(ctx);
   if (d === 'c:orders') return ordersList(ctx);
@@ -514,7 +529,7 @@ async function handleClientCallback(ctx, d) {
     const f = clientFlows.get(uidOf(ctx));
     if (!f || f.type !== 'confirm_buy') return assetScreen(ctx);
     const pair = currencies.get(f.key);
-    clientFlows.set(uidOf(ctx), { type: 'wallet', key: f.key, rub: f.rub });
+    clientFlows.set(uidOf(ctx), { type: 'wallet', key: f.key, crypto: f.crypto });
     return show(ctx,
       `👛 <b>Кошелёк получателя</b>\n\nОтправьте адрес ${esc(pair.label)}:\n<code>${esc(pair.walletHint)}</code>\n\n/cancel — отмена`,
       new InlineKeyboard().text('↩️ К активам', 'c:exchange'));
@@ -587,29 +602,26 @@ async function handleClientText(ctx) {
   if (!f) {
     return ctx.reply('Я здесь, чтобы помочь с обменом 🌌\nОткройте меню — или нажмите /menu.', { reply_markup: menuKb(s) });
   }
-  if (f.type === 'rub') {
+  if (f.type === 'crypto') {
     const pair = currencies.get(f.key);
-    const rub = parseNum(text);
-    if (!isFinite(rub) || rub <= 0) {
-      return ctx.reply('Не похоже на сумму. Отправьте, например: 10 000');
+    const amount = parseNum(text);
+    if (!isFinite(amount) || amount <= 0) {
+      return ctx.reply('Отправьте положительное число — сколько крипты хотите получить. Например: 0.001');
     }
-    if (rub < s.minRub || rub > s.maxRub) {
-      return ctx.reply(`Сумма должна быть от ${fmtRub(s.minRub)} до ${fmtRub(s.maxRub)}.`);
-    }
-    return buySummary(ctx, pair, Math.round(rub));
+    return buySummary(ctx, pair, amount);
   }
   if (f.type === 'confirm_buy') {
-    return buySummary(ctx, currencies.get(f.key), f.rub); // повтор суммы на случай текста
+    return buySummary(ctx, currencies.get(f.key), f.crypto); // повтор суммы на случай текста
   }
   if (f.type === 'wallet') {
     const pair = currencies.get(f.key);
     const err = currencies.validateWallet(pair.currency, pair.network, text);
     if (err) return ctx.reply(`⚠️ ${err}\n\nПопробуйте ещё раз:`);
-    const order = createBuyOrder(ctx, pair, f.rub, text.trim());
+    const order = createBuyOrder(ctx, pair, f.crypto, text.trim());
     if (!order) return show(ctx, '⛔ Направление временно недоступно — попробуйте позже.', assetKb());
     clientFlows.delete(uidOf(ctx));
     return show(ctx,
-      `✅ <b>Заявка #${order.id} создана!</b>\n\n🔍 Ищем реквизиты — обычно меньше минуты. Реквизиты придут сюда, не закрывайте чат.`,
+      `✅ <b>Заявка #${order.id} создана!</b>\n\n💰 Оператор скоро назовёт стоимость в рублях — она придёт сюда и появится в приложении. Мы ничего не переводим, пока вы не согласитесь с суммой.`,
       new InlineKeyboard().text('📦 Мои заявки', 'c:orders').text('💱 Ещё обмен', 'c:exchange'));
   }
   if (f.type === 'gift_units') {

@@ -33,7 +33,7 @@
   // dir — выбранное направление (ключ из /api/settings → rates[]).
   // screen — на каком под-экране обмена мы находимся: «picker» (выбор активов) или «form» (форма обмена).
   // sheet — какая шторка открыта (crypto | gift) или null.
-  const S = { settings: null, me: null, orders: [], order: null, tab: 'exchange', dir: 'BTC', isDemo: false, calcFrom: 'rub', support: [], mode: 'buy', screen: 'picker', sheet: null, giftRules: false };
+  const S = { settings: null, me: null, orders: [], order: null, tab: 'exchange', dir: 'BTC', isDemo: false, support: [], screen: 'picker', sheet: null, giftRules: false, adminOpen: false, admin: null };
 
   // Резервный реестр направлений: нужен, если сервер старой версии не прислал rates.
   const FALLBACK_DIRS = [
@@ -55,7 +55,10 @@
     }));
   }
   const isGiftDir = (d) => !!d && (d.kind === 'gift' || d.direction === 'sell');
-  const available = () => dirs().filter((d) => d.enabled !== false && Number(d.rate) > 0);
+  // Покупка крипты не показывает курс и не зависит от него — нужна лишь включённость направления.
+  // Карта (продажа) клиенту видна только с настроенным курсом.
+  const eligible = (d) => d.enabled !== false && (isGiftDir(d) ? Number(d.rate) > 0 : true);
+  const available = () => dirs().filter(eligible);
   // Направления покупки (₽ → крипта) и продажи (гифт-карта → USDT).
   const buyDirs = () => available().filter((d) => !isGiftDir(d));
   const sellDirs = () => available().filter(isGiftDir);
@@ -68,19 +71,19 @@
     if (/^0x[0-9a-fA-F]{40}$/.test(a)) return 'ERC20';
     return null;
   }
-  // Курс USDT своей сети — по нему считаем, сколько USDT получит клиент за карту.
-  function usdtRateFor(network) {
+  // Выплата карты идёт в USDT — проверяем лишь то, что сеть включена оператором.
+  function usdtNetEnabled(network) {
     const key = network === 'ERC20' ? 'USDT_ERC20' : 'USDT_TRC20';
     const d = dirs().find((x) => x.key === key);
-    return d && Number(d.rate) > 0 ? Number(d.rate) : null;
+    return d && d.enabled !== false;
   }
   // Сколько USDT даём за карту номиналом units $: курс карты (USDT за $1) не зависит от сети.
   function giftPayout(units, network) {
     const dir = isGiftDir(currentDir()) ? currentDir() : currentSellDir();
     const giftRate = Number(dir && dir.rate) || 0;
     if (!(giftRate > 0)) return null;
-    // Нужно, чтобы выплата в этой сети была включена и настроена.
-    if (!(usdtRateFor(network) > 0)) return null;
+    // Нужно, чтобы выплата в этой сети была включена.
+    if (!usdtNetEnabled(network)) return null;
     return floorTo((Number(units) || 0) * giftRate, 2);
   }
   function currentDir() {
@@ -91,7 +94,7 @@
   function selectDir(key) {
     const all = dirs();
     const want = all.find((d) => d.key === key);
-    const dir = want && want.enabled !== false && Number(want.rate) > 0 ? want : available()[0] || want || all[0];
+    const dir = want && eligible(want) ? want : available()[0] || want || all[0];
     S.dir = dir ? dir.key : key;
     return S.dir;
   }
@@ -126,6 +129,7 @@
 
   const STATUS = {
     new: { label: 'Подбор реквизитов', color: '#ffb648' },
+    quote: { label: 'Согласование суммы', color: '#38bdf8' },
     details: { label: 'Ожидает оплаты', color: '#38bdf8' },
     paid: { label: 'Подтверждение', color: '#ffb648' },
     completed: { label: 'Завершён', color: '#22e5a2' },
@@ -142,21 +146,6 @@
     const fixed = n.toFixed(d);
     const trimmed = fixed.includes('.') ? fixed.replace(/\.?0+$/, '') : fixed;
     return (trimmed || '0') + ' ' + cur;
-  };
-  const cryptoFromRub = (rub, rate, dec = 8) => floorTo((Number(rub) || 0) / rate, dec);
-  const rubFromCrypto = (crypto, rate) => Math.ceil(Number(crypto) * rate - 1e-6);
-  // Обрезает «хвост» нулей, но не больше precision знаков (USDT — 2).
-  const fmtTrim = (v, precision = 8) => {
-    const n = Number(v) || 0;
-    if (!(n > 0)) return '';
-    const d = Math.min(Math.max(Number(precision) || 8, 0), 8);
-    return n.toFixed(d).replace(/\.?0+$/, '');
-  };
-  const fmtRate = (rate) => {
-    const n = Number(rate) || 0;
-    if (!(n > 0)) return '—';
-    const text = n.toFixed(2).replace(/\.?0+$/, '');
-    return text.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' ₽';
   };
   const fmtDate = (ts) => {
     const d = new Date(ts);
@@ -233,8 +222,8 @@
     swap: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>',
     clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
     users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.4 3.4-5 6.5-5s5.7 1.6 6.5 5"/><circle cx="17" cy="9" r="2.6"/><path d="M16.5 15.2c2.6.3 4.4 1.8 5 4.8"/></svg>',
-    user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.6"/><path d="M5 20c.8-3.6 3.6-5.6 7-5.6s6.2 2 7 5.6"/></svg>',
-    chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="10.5" r="4.2"/><path d="M4.5 21c.9-3.8 4-5.8 7.5-5.8s6.6 2 7.5 5.8"/><path d="M6.8 10.6a5.2 5.2 0 0 1 10.4 0"/><path d="M17.2 10.6v2a1.6 1.6 0 0 1-1.6 1.6h-1.6"/></svg>',
+    user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7.6" width="18" height="12.4" rx="2.6"/><path d="M9.2 7.6V6.1A2.1 2.1 0 0 1 11.3 4h1.4a2.1 2.1 0 0 1 2.1 2.1v1.5"/><path d="M3 13.2h18"/><path d="M12 12v2.6"/></svg>',
+    chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.6" width="18" height="12.8" rx="4.1"/><path d="M8.4 17.4v3.9c0 .7.8 1.1 1.3.6l3.9-4.1"/><circle cx="8.6" cy="11" r="1.05" fill="currentColor" stroke="none"/><circle cx="12" cy="11" r="1.05" fill="currentColor" stroke="none"/><circle cx="15.4" cy="11" r="1.05" fill="currentColor" stroke="none"/></svg>',
     down: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16"/><path d="m6 14 6 6 6-6"/></svg>',
     copy: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
     check: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 12.5 5 5 10-11"/></svg>',
@@ -267,7 +256,7 @@
       ['history', 'История', ICONS.clock],
       ['refs', 'Рефералы', ICONS.users],
       ['support', 'Чат', ICONS.chat],
-      ['profile', 'ЛК', ICONS.user],
+      ['profile', 'Профиль', ICONS.user],
     ];
     $('#nav').innerHTML = items
       .map(([id, l, ic]) => `<button data-tab="${id}" class="${S.tab === id ? 'on' : ''}">${ic}<span>${l}</span>${id==='support' && S.support.length ? `<span class="badge">${S.support.length>99?'99+':S.support.length}</span>` : ''}</button>`)
@@ -314,7 +303,7 @@
             const sub =
               kind === 'gift'
                 ? `1 $ = ${Number(d.rate) || 0} USDT · выплата в USDT`
-                : `1 ${d.currency} = ${fmtRate(d.rate)}${d.network ? ' · сеть ' + d.network : ''}`;
+                : (d.network ? `Сеть ${d.network} · комиссию назовёт оператор` : 'Стоимость назовёт оператор после заявки');
             return `<button class="sheet-row${on ? ' on' : ''}" data-key="${esc(d.key)}" role="option" aria-selected="${on ? 'true' : 'false'}">
               <span class="coin-ic ${esc(d.coin)}">${coinInner(d)}</span>
               <span class="sheet-row-text"><b>${esc(d.label)}</b><i>${esc(sub)}</i></span>
@@ -404,11 +393,12 @@
   function syncTgBack() {
     try {
       if (!tg || !tg.BackButton) return;
-      const need = S.tab === 'exchange' && !S.order && (S.screen === 'form' || !!S.sheet || !!S.giftRules);
+      const need = S.tab === 'exchange' && !S.order && (S.screen === 'form' || !!S.sheet || !!S.giftRules || !!S.adminOpen);
       if (need) tg.BackButton.show(); else tg.BackButton.hide();
     } catch (e) { /* не-Telegram окружение */ }
   }
   function onTgBackButton() {
+    if (S.adminOpen) { closeAdminSheet(); return; }
     if (S.giftRules) { giftRulesClose(); return; }
     if (S.sheet) { closeAssetSheet(); return; }
     if (S.tab === 'exchange' && S.screen === 'form') goToAssetPicker();
@@ -431,7 +421,7 @@
           ${cryptoOn ? `
           <div class="picker-group">
             <div class="picker-group-label">КРИПТОВАЛЮТА</div>
-            <button class="group-card" data-group="crypto">
+            <button class="group-card${S.settings.online ? '' : ' off'}" data-group="crypto">
               <span class="coin-ic btc group-ic">₿</span>
               <span class="group-text"><b>Криптовалюта</b><i>BTC · LTC · USDT TRC20 / ERC20</i></span>
               <span class="group-chev">${ICONS.right}</span>
@@ -440,7 +430,7 @@
           ${giftOn ? `
           <div class="picker-group">
             <div class="picker-group-label">ПОДАРОЧНЫЕ КАРТЫ</div>
-            <button class="group-card" data-group="gift">
+            <button class="group-card${S.settings.online ? '' : ' off'}" data-group="gift">
               <span class="coin-ic google group-ic">${GIFT_ICON}</span>
               <span class="group-text"><b>Подарочные карты</b><i>Google Gift Card — выплата в USDT</i></span>
               <span class="group-chev">${ICONS.right}</span>
@@ -460,14 +450,10 @@
           <div id="buyForm">
           <div class="card">
             <div class="card-title">Направление обмена</div>
-            <div class="f-label"><span>Вы отдаёте</span><span id="mmLabel"></span></div>
-            <div class="f-box"><div class="coin-ic rub">₽</div><input id="inRub" type="number" inputmode="decimal" placeholder="5 000" min="0" step="any"></div>
-            <div class="f-sep"><div class="arr">${ICONS.down}</div></div>
-            <div class="f-label"><span>Вы получаете</span><span id="cryptoLimits"></span></div>
+            <div class="f-label"><span>Вы получаете (точное количество)</span></div>
             <div id="netPick"></div>
             <div class="f-box" style="margin-top:10px"><div class="coin-ic" id="getIc">${coinInner(dir)}</div><input id="inCrypto" type="number" inputmode="decimal" placeholder="0.0005" min="0" step="any"></div>
-            <div class="f-hint">Введите сумму в любом поле — второе посчитается автоматически</div>
-            <div class="f-meta" id="fMeta"></div>
+            <div class="f-hint">Стоимость в рублях назовёт оператор после заявки. Вы ничего не переводите, пока не согласитесь с суммой.</div>
           </div>
           <div class="card">
             <div class="card-title">Кошелёк получателя</div>
@@ -475,7 +461,7 @@
             <div class="f-hint" id="walHint"></div>
             <div class="f-err" id="fErr"></div>
           </div>
-          <button class="btn btn-primary" style="margin-top:14px" id="btnGo">${ICONS.bolt}<span>Найти реквизиты</span></button>
+          <button class="btn btn-primary" style="margin-top:14px" id="btnGo">${ICONS.bolt}<span>Отправить заявку</span></button>
         </div>
         <div id="giftForm" class="hidden">
           <div class="card">
@@ -521,8 +507,7 @@
       haptic('light');
       openAssetSheet(isGiftDir(currentDir()) ? 'gift' : 'crypto');
     });
-    $('#inRub').addEventListener('input', () => { S.calcFrom = 'rub'; renderFormMeta(); });
-    $('#inCrypto').addEventListener('input', () => { S.calcFrom = 'crypto'; renderFormMeta(); });
+    $('#inCrypto').addEventListener('input', renderFormMeta);
     $('#btnGo').addEventListener('click', submitOrder);
 
     if (giftOn) {
@@ -562,8 +547,6 @@
     const s = S.settings;
     if (!s) return;
     const dir = currentDir();
-    const rate = Number(dir.rate);
-    const dec = displayOf(dir);
     const all = available();
     syncPickerAvailability();
     // Гифт-карта — отдельная форма: номинал в $ → USDT, без полей рублей и курса.
@@ -572,7 +555,7 @@
     if ($('#giftForm')) $('#giftForm').classList.toggle('hidden', !giftMode);
     if (giftMode) return renderGiftMeta();
     // Выбранное направление выключили — переключаемся на доступное.
-    if (!rate || dir.enabled === false) {
+    if (dir.enabled === false) {
       if (all.length) {
         S.dir = all[0].key;
         return renderFormMeta();
@@ -584,20 +567,6 @@
       }
       return;
     }
-    const inRub = $('#inRub');
-    const inCrypto = $('#inCrypto');
-    if (inRub && inCrypto) {
-      if (S.calcFrom === 'crypto') {
-        const c = parseFloat(inCrypto.value);
-        inRub.value = c > 0 ? String(rubFromCrypto(c, rate)) : '';
-      } else {
-        const rub = parseFloat(inRub.value);
-        inCrypto.value = rub > 0 ? fmtTrim(cryptoFromRub(rub, rate, dec), dec) : '';
-      }
-    }
-    $('#mmLabel').textContent = `от ${fmtRub(s.minRub)} до ${fmtRub(s.maxRub)}`;
-    const cl = $('#cryptoLimits');
-    if (cl) cl.textContent = `≈ ${fmtTrim(s.minRub / rate, dec)}–${fmtTrim(s.maxRub / rate, dec)} ${dir.currency}`;
     const ic = $('#getIc');
     if (ic) { ic.className = 'coin-ic ' + dir.coin; ic.innerHTML = coinInner(dir); }
     const wi = $('#walIc');
@@ -614,14 +583,9 @@
     if (wh) wh.textContent = dir.network
       ? `⚠️ Выплата только в сети ${dir.network}. Адрес из другой сети приведёт к потере средств.`
       : '';
-    $('#fMeta').innerHTML = `
-      <div class="row"><span>Курс</span><b>1 ${esc(dir.currency)} = ${fmtRate(rate)}</b></div>
-      ${dir.network ? `<div class="row"><span>Сеть</span><b>${esc(dir.network)}</b></div>` : ''}
-      ${s.rateUpdatedAt ? `<div class="row"><span>Курс обновлён</span><b>${fmtDate(s.rateUpdatedAt)}</b></div>` : ''}
-      <div class="row"><span>Обработкой занимается</span><b>оператор VEGA</b></div>`;
     const btn = $('#btnGo');
     btn.disabled = !s.online;
-    btn.querySelector('span').textContent = s.online ? 'Найти реквизиты' : '⛔ Обмен временно недоступен';
+    btn.querySelector('span').textContent = s.online ? 'Отправить заявку' : '⛔ Обмен временно недоступен';
   }
 
   // Гифт-карта: номинал в $ → сколько USDT получим и в какой сети.
@@ -657,11 +621,9 @@
     }
     const hint = $('#giftNetHint');
     if (hint) {
-      const trc = usdtRateFor('TRC20');
-      const erc = usdtRateFor('ERC20');
       hint.textContent = network
         ? `Сеть ${network}: выплата ${payout ? amount(payout) : '—'} USDT за $${nominal}`
-        : `Сеть определим по адресу: TRC20 (${trc ? fmtRate(trc) : '—'}) · ERC20 (${erc ? fmtRate(erc) : '—'})`;
+        : 'Сеть определим по адресу: TRC20 начинается с T, ERC20 — с 0x';
     }
     const meta = $('#giftMeta');
     if (meta) {
@@ -766,19 +728,12 @@
     const err = $('#fErr');
     err.textContent = '';
     const dir = currentDir();
-    const rate = Number(dir.rate);
-    const dec = displayOf(dir);
-    if (!(rate > 0)) return (err.textContent = 'Это направление сейчас недоступно — выберите другое.');
-    const rawRub = parseFloat($('#inRub').value);
+    if (dir.enabled === false) return (err.textContent = 'Это направление сейчас недоступно — выберите другое.');
     const rawCrypto = parseFloat($('#inCrypto').value);
-    const useCrypto = S.calcFrom === 'crypto' && isFinite(rawCrypto) && rawCrypto > 0;
-    const cryptoAmount = useCrypto ? rawCrypto : null;
-    const rub = useCrypto ? rubFromCrypto(rawCrypto, rate) : rawRub;
+    const cryptoAmount = isFinite(rawCrypto) && rawCrypto > 0 ? rawCrypto : null;
     const wallet = ($('#inWallet').value || '').trim();
-    const limits = (v) => `${fmtTrim(cryptoFromRub(v, rate, dec), dec)} ${dir.currency}`;
     if (!s.online) return (err.textContent = '⛔ Обмен временно недоступен — загляните позже.');
-    if (!isFinite(rub) || rub < s.minRub) return (err.textContent = `Минимальная сумма обмена — ${fmtRub(s.minRub)} (≈ ${limits(s.minRub)}).`);
-    if (rub > s.maxRub) return (err.textContent = `Максимальная сумма обмена — ${fmtRub(s.maxRub)} (≈ ${limits(s.maxRub)}).`);
+    if (!cryptoAmount) return (err.textContent = 'Укажите количество крипты — сколько хотите получить (например 0.001).');
     let re = null;
     try { re = new RegExp(dir.walletPattern); } catch (e) { re = null; }
     if (re ? !re.test(wallet) : !/^[a-zA-Z0-9]{26,90}$/.test(wallet)) {
@@ -788,8 +743,7 @@
     btn.disabled = true;
     haptic('medium');
     try {
-      const common = { currency: dir.currency, network: dir.network || undefined, wallet, startParam };
-      const body = useCrypto ? { cryptoAmount, ...common } : { rub, ...common };
+      const body = { cryptoAmount, currency: dir.currency, network: dir.network || undefined, wallet, startParam };
       const r = await api('/api/orders', { method: 'POST', body });
       S.order = r.order;
       S.orders.unshift(r.order);
@@ -802,6 +756,8 @@
       toast(e.message);
     } finally {
       btn.disabled = !S.settings.online;
+      const span = btn.querySelector('span');
+      if (span) span.textContent = S.settings.online ? 'Отправить заявку' : '⛔ Обмен временно недоступен';
     }
   }
 
@@ -951,7 +907,6 @@
       const expired = o.cancelReason === 'Срок на сделку истёк';
       box.innerHTML = `
         <div class="card stage">
-          <div class="failmark">${rej ? '🔴' : '⚪'}</div>
           <div class="stage-title">${rej ? 'Карта не принята' : expired ? 'Срок на сделку истёк' : 'Заявка отменена'}</div>
           <div class="stage-sub">${rej ? 'Оператор не смог подтвердить карту по заявке #' + o.id + '. Проверьте код или напишите в поддержку.' : expired ? 'На сделку даётся 1 час. Создайте новую заявку с тем же кодом карты.' : 'Вы отменили заявку #' + o.id + '.'}</div>
           <button class="btn btn-primary" style="margin-top:18px" id="btnNew">Новая заявка</button>
@@ -978,12 +933,48 @@
     if (!box) return;
     if (!o) { box.innerHTML = ''; return; }
     if (isGiftOrder(o) && renderGiftStage(o)) return;
-    if (o.status === 'new') {
+    if (o.status === 'quote') {
+      box.innerHTML = `
+        <div class="card stage">
+          ${chip('quote', 'Согласование суммы')}
+          <div class="pay-dir">${ICONS.swap}<span>₽ → <b>${esc(dirLabel(o))}</b> · ${cryptoOf(o)}</span></div>
+          <div class="pay-amount"><div class="l">Оператор назвал сумму</div><div class="v">${fmtRub(o.payRub || o.rub)}</div></div>
+          <div class="note">Продолжить сделку можно только с вашего согласия. Если сумма не подходит — откажитесь, заявка отменится.</div>
+          <button class="btn btn-primary" style="margin-top:14px" id="btnQuoteYes">${ICONS.check}<span>Согласен, продолжить</span></button>
+          <button class="btn btn-ghost" style="margin-top:8px" id="btnQuoteNo">❌ Отказаться</button>
+        </div>`;
+      const respond = async (action, btnId) => {
+        const b = $(btnId);
+        b.disabled = true;
+        haptic(action === 'quote-accept' ? 'heavy' : 'medium');
+        try {
+          const r = await api(`/api/order/${o.id}/${action}`, { method: 'POST' });
+          S.order = r.order;
+          syncStatus();
+          renderOrderStage();
+          toast(action === 'quote-accept' ? 'Сумма согласована — ждём реквизиты ✅' : 'Заявка отменена');
+        } catch (e) {
+          b.disabled = false;
+          toast(e.message || 'Не удалось отправить ответ');
+        }
+      };
+      $('#btnQuoteYes').addEventListener('click', () => respond('quote-accept', '#btnQuoteYes'));
+      $('#btnQuoteNo').addEventListener('click', () => respond('quote-decline', '#btnQuoteNo'));
+    } else if (o.status === 'new' && !isGiftOrder(o) && !(o.payRub || o.rub)) {
+      box.innerHTML = `
+        <div class="card stage">
+          <div class="spinner-wrap"><div class="spinner"></div><div class="spinner-ic">💰</div></div>
+          <div class="stage-title">Оператор изучает заявку</div>
+          <div class="stage-sub">Заявка <b>#${o.id}</b> передана оператору.<br>Скоро он назовёт стоимость <b>${cryptoOf(o)}</b> в рублях — вы увидите сумму и согласитесь или откажетесь.</div>
+          <button class="btn btn-ghost" style="margin-top:18px" id="btnCancel">Отменить заявку</button>
+        </div>`;
+      $('#btnCancel').addEventListener('click', async () => { haptic('light'); await changeOrder(o, 'cancel'); });
+    } else if (o.status === 'new') {
       box.innerHTML = `
         <div class="card stage">
           <div class="spinner-wrap"><div class="spinner"></div><div class="spinner-ic">🔍</div></div>
-          <div class="stage-title">Ищем реквизиты для оплаты</div>
-          <div class="stage-sub">Заявка <b>#${o.id}</b> передана оператору.<br>Обычно это занимает меньше минуты — не закрывайте приложение.</div>
+          <div class="stage-title">Сумма согласована — ищем реквизиты</div>
+          <div class="stage-sub">Заявка <b>#${o.id}</b> · ${cryptoOf(o)} · <b>${fmtRub(o.payRub || o.rub)}</b><br>Обычно это занимает меньше минуты — не закрывайте приложение.</div>
           <button class="btn btn-ghost" style="margin-top:18px" id="btnCancel">Отменить заявку</button>
         </div>`;
       $('#btnCancel').addEventListener('click', async () => {
@@ -1080,7 +1071,6 @@
       const rej = o.status === 'rejected';
       box.innerHTML = `
         <div class="card stage">
-          <div class="failmark">${rej ? '🔴' : '⚪'}</div>
           <div class="stage-title">${rej ? 'Заявка отклонена' : 'Заявка отменена'}</div>
           <div class="stage-sub">${rej ? 'Оператор отклонил заявку #' + o.id + '. Если это ошибка — напишите в поддержку.' : 'Вы отменили заявку #' + o.id + '.'}</div>
           ${o.txUrl ? `<div class="tx-box"><div class="tx-label">🔗 Блокчейн</div><a class="tx-link" href="${esc(o.txUrl)}" target="_blank" rel="noopener">${esc(o.txUrl)}</a></div>` : ''}
@@ -1183,7 +1173,7 @@
   function renderHistory() {
     const v = $('#view-history');
     if (!S.orders.length) {
-      v.innerHTML = `<div class="card"><div class="empty"><div class="e-ic">🗂</div>История пока пуста.<br>Совершите первый обмен — он появится здесь.</div></div>`;
+      v.innerHTML = `<div class="card"><div class="empty">История пока пуста.<br>Совершите первый обмен — он появится здесь.</div></div>`;
       return;
     }
     v.innerHTML =
@@ -1196,7 +1186,7 @@
           <div class="h-main">
             ${isGiftOrder(o)
               ? `<div class="h-top"><span>$${giftNominal(o)} карта → USDT</span><span>${fmtCrypto(o.crypto, 'USDT', 2)}</span></div>`
-              : `<div class="h-top"><span>₽ → ${esc(dirLabel(o))}</span><span>${fmtRub(o.payRub || o.rub)}</span></div>`}
+              : `<div class="h-top"><span>₽ → ${esc(dirLabel(o))}</span><span>${o.payRub || o.rub ? fmtRub(o.payRub || o.rub) : cryptoOf(o)}</span></div>`}
             <div class="h-sub"><span>#${o.id}${o.receipt ? ' 🧾' : ''}${o.txUrl ? ' 🔗' : ''} · ${fmtDate(o.createdAt)}</span>${chip(o.status)}</div>
             <div class="h-sub" style="margin-top:2px"><span>${esc(o.wallet.slice(0, 10) + '…' + o.wallet.slice(-6))}</span><b style="color:#9fd8ff">${cryptoOf(o)}</b></div>
             ${o.txUrl ? `<div class="h-sub" style="margin-top:6px"><a href="${esc(o.txUrl)}" target="_blank" rel="noopener" style="color:var(--teal);font-size:11px;word-break:break-all">🔗 ${esc(o.txUrl.slice(0,50))}…</a></div>` : ''}
@@ -1259,7 +1249,6 @@
     const v = $('#view-profile');
     const me = S.me || {};
     const name = me.name || 'Клиент';
-    const letter = (String(name).trim()[0] || 'V').toUpperCase();
     const userLine = [me.username ? '@' + me.username : null, 'ID ' + (me.id ?? '—')].filter(Boolean).join(' · ');
     const doneOrders = S.orders.filter((o) => o.status === 'completed');
     const volume = doneOrders.reduce((sum, o) => sum + Number(o.payRub || o.rub || 0), 0);
@@ -1267,7 +1256,6 @@
     const link = s.botUsername ? `https://t.me/${s.botUsername}?startapp=ref${me.id}` : null;
     v.innerHTML = `
       <div class="card lc-head">
-        <div class="lc-avatar">${esc(letter)}</div>
         <div class="lc-id">
           <div class="lc-name">${esc(name)}</div>
           <div class="lc-sub">${esc(userLine)}</div>
@@ -1289,14 +1277,7 @@
         </div>` : ''}
       </div>
       ${S.me.isAdmin ? `
-      <div class="card">
-        <div class="card-title">🛠 Админка</div>
-        <div class="about" style="font-size:12px;color:var(--mut);margin-bottom:10px;line-height:1.55">Ссылка на чат поддержки. Сохраняется сразу и видна всем на сайте и в приложении. Та же настройка меняется в боте: ⚙️ Настройки → 💬 Чат.</div>
-        <label class="f-label" for="lcChatLink"><span>Ссылка на чат</span></label>
-        <div class="f-box"><input id="lcChatLink" placeholder="https://t.me/… или @юзернейм" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
-        <div class="f-err" id="lcChatErr"></div>
-        <button class="btn btn-primary" style="margin-top:10px" id="lcChatSave"><span>Сохранить ссылку</span></button>
-      </div>` : ''}
+      <button class="btn btn-ghost lc-admin-btn" id="lcOpenAdmin">🛠 <span>Админка и настройки обменника</span></button>` : ''}
       <div class="card">
         <div class="card-title">Связь с нами</div>
         <div class="contacts">
@@ -1313,36 +1294,208 @@
     if (goRefs) goRefs.addEventListener('click', () => goTab('refs'));
     const go = $('#goSupport');
     if (go) go.addEventListener('click', () => goTab('support'));
-    const chatInput = $('#lcChatLink');
-    if (chatInput) {
-      chatInput.value = S.settings.chat || '';
-      const errEl = $('#lcChatErr');
-      const saveBtn = $('#lcChatSave');
-      chatInput.addEventListener('input', () => { errEl.textContent = ''; });
-      saveBtn.addEventListener('click', async () => {
-        const chat = (chatInput.value || '').trim();
-        errEl.textContent = '';
-        if (!/^(https:\/\/|@[A-Za-z0-9_]{5,32}$)/.test(chat) || chat.length < 8) {
-          errEl.textContent = 'Укажите ссылку t.me/… или юзернейм @… (например https://t.me/+abc или @vega_support).';
-          return;
-        }
-        saveBtn.disabled = true;
-        haptic('medium');
+    const openAdmin = $('#lcOpenAdmin');
+    if (openAdmin) openAdmin.addEventListener('click', () => { haptic('light'); openAdminSheet(); });
+  }
+
+  /* ---------- админка в приложении (только для оператора VEGA) ---------- */
+  S.adminOpen = S.adminOpen || false;
+  S.admin = S.admin || null;
+  let adminSheetTimer = null;
+  let adminSheetFrames = [];
+  let adminTab = S.adminTab || 'crypto';
+  const CRYPTO_DIRS = [
+    ['BTC', 'Bitcoin', 'BTC · ведущая сеть', 'btc', '₿'],
+    ['LTC', 'Litecoin', 'LTC · быстрые тройки', 'ltc', 'Ł'],
+    ['USDT_TRC20', 'USDT TRC20', 'TRON · низкая комиссия', 'usdt', '₮'],
+    ['USDT_ERC20', 'USDT ERC20', 'Ethereum · надёжная сеть', 'usdt', '₮'],
+  ];
+  const GIFT_DIR = [['GOOGLE_USD', 'Google Gift Card', 'приём карт в USD', 'google', GIFT_ICON]];
+  const giftRateOf = (fee, manual) => {
+    const m = Number(manual);
+    if (Number.isFinite(m) && m > 0) return m;
+    const p = Number(fee);
+    const safe = Number.isFinite(p) ? Math.min(Math.max(p, 0), 95) : 0;
+    return Math.round((100 - safe)) / 100;
+  };
+  const giftPreviewText = (fee, manual) => {
+    const rate = giftRateOf(fee, manual);
+    const out = Math.floor(10 * rate * 100 + 1e-6) / 100;
+    return `Карта $10 → ${out.toFixed(2).replace('.', ',')} USDT`;
+  };
+  function syncAdminSession() {
+    const A = S.admin || {};
+    const on = !!A.online;
+    const sheet = $('#adminSheet');
+    if (sheet) sheet.classList.toggle('trading-on', on);
+    const block = $('#admSession');
+    if (block) block.classList.toggle('on', on);
+    if (block) block.classList.toggle('off', !on);
+    const title = $('#admSessionTitle');
+    if (title) title.textContent = on ? 'Торги открыты' : 'Торги закрыты';
+    const sub = $('#admSessionSub');
+    if (sub) sub.textContent = on
+      ? 'Направления подсвечены — клиенты могут обменивать'
+      : 'Клиенты видят «обмен временно недоступен»';
+    const btn = $('#admSessionBtn');
+    if (btn) btn.innerHTML = on ? '🔴 Закрыть торги' : '🟢 Открыть торги';
+  }
+
+  function syncAdminTabs() {
+    document.querySelectorAll('#admTabs .adm-tab').forEach((b) => b.classList.toggle('on', b.dataset.tab === adminTab));
+    document.querySelectorAll('#adminSheet .adm-pane').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== adminTab));
+  }
+  function openAdminSheet() {
+    const sheet = $('#adminSheet');
+    if (!sheet) return;
+    if (adminSheetTimer) { clearTimeout(adminSheetTimer); adminSheetTimer = null; }
+    sheet.classList.remove('hidden');
+    sheet.setAttribute('aria-hidden', 'false');
+    adminSheetFrames = [requestAnimationFrame(() => { adminSheetFrames[1] = requestAnimationFrame(() => sheet.classList.add('open')); })];
+    document.body.classList.add('sheet-lock');
+    S.adminOpen = true;
+    syncAdminTabs();
+    syncTgBack();
+    loadAdminSettings();
+  }
+  function closeAdminSheet() {
+    const sheet = $('#adminSheet');
+    S.adminOpen = false;
+    document.body.classList.remove('sheet-lock');
+    adminSheetFrames.forEach((f) => { try { cancelAnimationFrame(f); } catch (e) {} });
+    adminSheetFrames = [];
+    if (!sheet || sheet.classList.contains('hidden')) { syncTgBack(); return; }
+    sheet.classList.remove('open');
+    sheet.setAttribute('aria-hidden', 'true');
+    if (adminSheetTimer) clearTimeout(adminSheetTimer);
+    adminSheetTimer = setTimeout(() => sheet.classList.add('hidden'), 320);
+    syncTgBack();
+  }
+  function renderAdminDirs(container, keys) {
+    const A = S.admin || {};
+    container.innerHTML = keys
+      .map(([key, label, sub, coin, icon]) => `<button class="adm-toggle ${A.directions && A.directions[key] ? 'on' : ''}" data-dir="${key}" role="switch" aria-checked="${A.directions && A.directions[key] ? 'true' : 'false'}"><span class="adm-dir"><span class="coin-ic ${esc(coin)} adm-coin" aria-hidden="true">${icon}</span><span class="adm-dir-text">${esc(label)}<small>${esc(sub)}</small></span></span><span class="adm-switch" aria-hidden="true"></span></button>`)
+      .join('');
+    container.querySelectorAll('.adm-toggle').forEach((btn) =>
+      btn.addEventListener('click', async () => {
+        const key = btn.dataset.dir;
+        const next = !(S.admin && S.admin.directions && S.admin.directions[key]);
+        btn.disabled = true;
+        haptic('light');
         try {
-          const r = await api('/api/admin/settings/chat', { method: 'POST', body: { chat } });
+          const r = await api('/api/admin/settings', { method: 'POST', body: { enabled: { [key]: next } } });
+          S.admin = r.admin;
           S.settings = r.settings;
-          renderAnnounce();
-          toast('Ссылка на чат сохранена — уже видна всем ✅');
-          renderProfile(); // пересобираем контакты и поле со свежей ссылкой
-          return;
+          renderAdminDirs(container, keys);
+          renderExchange();
+          toast(next ? `${key === 'GOOGLE_USD' ? 'Карта' : key} включена ✅` : `${key === 'GOOGLE_USD' ? 'Карта' : key} выключена ⛔`);
         } catch (e) {
-          errEl.textContent = e.message;
-          toast(e.message);
-        } finally {
-          saveBtn.disabled = false;
+          toast(e.message || 'Не удалось переключить направление');
+          btn.disabled = false;
         }
-      });
+      })
+    );
+  }
+  function renderAdmin() {
+    const A = S.admin;
+    if (!A) return;
+    syncAdminSession();
+    // Валюты
+    renderAdminDirs($('#admCryptoDirs'), CRYPTO_DIRS);
+    // Карты
+    renderAdminDirs($('#admGiftDirs'), GIFT_DIR);
+    $('#admGiftFee').value = A.giftPercent;
+    $('#admGiftRate').value = A.rateGOOGLEUSD ?? '';
+    $('#admGiftErr').textContent = '';
+    updateGiftPreview();
+    // Чат
+    $('#admChatLink').value = A.chat || '';
+    $('#admChatErr').textContent = '';
+  }
+  async function loadAdminSettings(force = false) {
+    if (S.admin && !force) { renderAdmin(); return; }
+    try {
+      const r = await api('/api/admin/settings');
+      S.admin = r.admin;
+      S.settings = r.settings;
+      renderAdmin();
+    } catch (e) {
+      toast('Не удалось загрузить настройки администратора');
     }
+  }
+  async function saveAdmin(body, errEl, okText) {
+    errEl.textContent = '';
+    try {
+      const r = await api('/api/admin/settings', { method: 'POST', body });
+      S.admin = r.admin;
+      S.settings = r.settings;
+      renderAdmin();
+      renderExchange();
+      toast(okText);
+      return true;
+    } catch (e) {
+      errEl.textContent = e.message;
+      toast(e.message);
+      return false;
+    }
+  }
+  function updateGiftPreview() {
+    const el = $('#admGiftPreview');
+    if (!el) return;
+    el.textContent = giftPreviewText($('#admGiftFee').value, $('#admGiftRate').value);
+  }
+  function wireAdminSheet() {
+    document.querySelectorAll('#admTabs .adm-tab').forEach((b) =>
+      b.addEventListener('click', () => { adminTab = b.dataset.tab; haptic('light'); syncAdminTabs(); })
+    );
+    const closeBtn = $('#adminSheetClose');
+    if (closeBtn) closeBtn.addEventListener('click', () => { haptic('light'); closeAdminSheet(); });
+    const overlay = $('#adminSheetOverlay');
+    if (overlay) overlay.addEventListener('click', closeAdminSheet);
+    $('#admGiftSave').addEventListener('click', (e) => {
+      e.currentTarget.disabled = true;
+      haptic('medium');
+      const fee = $('#admGiftFee').value;
+      const rate = $('#admGiftRate').value;
+      saveAdmin(
+        { giftPercent: fee === '' ? 0 : Number(fee), rateGOOGLEUSD: rate === '' ? null : Number(rate) },
+        $('#admGiftErr'),
+        'Настройки карты сохранены ✅'
+      ).finally(() => { $('#admGiftSave').disabled = false; });
+    });
+    $('#admGiftFee').addEventListener('input', updateGiftPreview);
+    $('#admGiftRate').addEventListener('input', updateGiftPreview);
+    $('#admSessionBtn').addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const opening = !(S.admin && S.admin.online);
+      btn.disabled = true;
+      haptic('medium');
+      try {
+        const r = await api('/api/admin/settings', { method: 'POST', body: { online: opening } });
+        S.admin = r.admin;
+        S.settings = r.settings;
+        renderAdmin();
+        renderExchange();
+        if (opening) {
+          const n = Number(r.announced) || 0;
+          toast(n > 0 ? `Торги открыты 🟢 — объявление отправлено ${n} клиентам ✅` : 'Торги открыты 🟢 — обмен доступен всем ✅');
+        } else {
+          toast('Торги закрыты 🔴 — приём заявок остановлен');
+        }
+      } catch (err) {
+        toast(err.message || 'Не удалось изменить статус торгов');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    $('#admChatLink').addEventListener('input', () => { $('#admChatErr').textContent = ''; });
+    $('#admChatSave').addEventListener('click', (e) => {
+      e.currentTarget.disabled = true;
+      haptic('medium');
+      const chat = ($('#admChatLink').value || '').trim();
+      saveAdmin({ chat }, $('#admChatErr'), 'Ссылка на чат сохранена — уже видна всем ✅')
+        .finally(() => { $('#admChatSave').disabled = false; });
+    });
   }
 
   // Переключение вкладки нижнего меню (для кнопок внутри экранов).
@@ -1367,7 +1520,7 @@
         <div class="card-title">Чат поддержки</div>
         <div class="about" style="font-size:12px;color:var(--mut);margin-bottom:10px">Задайте вопрос оператору — отвечаем в реальном времени. Обычно отвечаем за 1–3 минуты.</div>
         <div class="chat-box" id="chatBox">
-          <div class="chat-empty" id="chatEmpty"><div class="e-ic">💬</div>Напишите сообщение — мы на связи 24/7</div>
+          <div class="chat-empty" id="chatEmpty">Напишите сообщение — мы на связи 24/7</div>
           <div class="chat-list" id="chatList"></div>
         </div>
         <div class="chat-input">
@@ -1451,7 +1604,7 @@
   }
 
   function renderDemoAdmin() {
-    if (!S.isDemo) return;
+    if (!S.isDemo || !(S.me && S.me.isAdmin)) return;
     let el = $('#demoAdmin');
     if (!el) {
       el = document.createElement('button');
@@ -1472,11 +1625,21 @@
         toast('Оператор подключился — клиент может отправить код (демо)');
       } else if (o.status === 'details' && isGiftOrder(o)) {
         toast('Оператор на связи — ждём код карты от клиента');
+      } else if (o.status === 'new' && !(o.payRub || o.rub)) {
+        const v = prompt('Сумма к оплате в рублях (на что соглашается клиент):', '5 000');
+        const rub = v === null ? null : parseFloat(String(v).replace(/\s/g, '').replace(',', '.'));
+        if (!(rub > 0)) { toast('Сумма отменена или некорректна'); return; }
+        const r = await api(`/api/admin/order/${o.id}/quote`, { method: 'POST', body: { rub } });
+        S.order = r.order;
+        renderOrderStage();
+        toast('Сумма отправлена клиенту на согласование (демо)');
       } else if (o.status === 'new') {
         const r = await api(`/api/admin/order/${o.id}/req`, { method: 'POST' });
         S.order = r.order;
         renderOrderStage();
         toast('Оператор выдал реквизиты (демо)');
+      } else if (o.status === 'quote') {
+        toast('Сумма у клиента на согласовании — жмём «Согласен» внизу заявки');
       } else if (o.status === 'paid') {
         const r = await api(`/api/admin/order/${o.id}/confirm`, { method: 'POST' });
         S.order = r.order;
@@ -1590,7 +1753,7 @@
     try { tg.BackButton.onClick(onTgBackButton); } catch (e) { /* старые клиенты */ }
   }
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { if (S.giftRules) giftRulesClose(); else if (S.sheet) closeAssetSheet(); }
+    if (e.key === 'Escape') { if (S.adminOpen) closeAdminSheet(); else if (S.giftRules) giftRulesClose(); else if (S.sheet) closeAssetSheet(); }
   });
   // Нижняя шторка выбора актива — разовая привязка (она в index.html, вне #view-exchange).
   const sheetCloseBtn = $('#sheetClose');
@@ -1605,6 +1768,7 @@
   if (rulesClose) rulesClose.addEventListener('click', () => { haptic('light'); giftRulesClose(); });
   const rulesOverlay = $('#giftRulesOverlay');
   if (rulesOverlay) rulesOverlay.addEventListener('click', giftRulesClose);
+  wireAdminSheet();
 
   (async () => {
     try {

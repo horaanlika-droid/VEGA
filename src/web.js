@@ -7,6 +7,8 @@ const receipts = require('./receipts');
 const currencies = require('./currencies');
 const { validateInitData, parseUser } = require('./validate');
 const admins = require('./admins');
+const rates = require('./rates');
+const quoteOps = require('./quote');
 
 const clientOrder = (o) => ({
   id: o.id,
@@ -41,7 +43,7 @@ const clientUser = (u) => ({
   username: u.username,
   referrer: u.referrer,
   referredCount: u.referredCount || 0,
-  isAdmin: !config.botToken || admins.has(String(u.id)),
+  isAdmin: admins.has(String(u.id)) || (!config.botToken && String(u.id) === '900001'),
 });
 
 function startWeb() {
@@ -120,6 +122,125 @@ function startWeb() {
   });
 
   app.get('/api/settings', (req, res) => res.json(store.publicSettings()));
+
+  const isAdminRequest = (req) => {
+    const a = auth(req);
+    if (!a) return null;
+    const id = String(a.user.id);
+    // В демо-режиме (BOT_TOKEN не задан) админка открыта только демо-гостю и админам — клиенты её не видят.
+    return admins.has(id) || (!config.botToken && id === '900001') ? a : null;
+  };
+
+  // Админка: текущие значения всех редактируемых настроек (в /api/settings их нет — комиссии не светим).
+  const adminSettingsBlock = () => {
+    const s = store.get().settings;
+    const on = (key) => currencies.isEnabled(s, key);
+    return {
+      chat: s.chat,
+      feePercent: s.feePercent ?? 0,
+      feePercentUSDTTRC20: s.feePercentUSDTTRC20 ?? 0,
+      feePercentUSDTERC20: s.feePercentUSDTERC20 ?? 0,
+      giftPercent: s.giftPercent ?? 0,
+      rateGOOGLEUSD: s.rateGOOGLEUSD ?? null,
+      directions: { BTC: on('BTC'), LTC: on('LTC'), USDT_TRC20: on('USDT_TRC20'), USDT_ERC20: on('USDT_ERC20'), GOOGLE_USD: on('GOOGLE_USD') },
+      online: !!s.online,
+    };
+  };
+
+  app.get('/api/admin/settings', (req, res) => {
+    const a = needAuth(req, res);
+    if (!a) return;
+    if (!isAdminRequest(req)) return res.status(403).json({ error: 'Только для оператора VEGA' });
+    res.json({ admin: adminSettingsBlock(), settings: store.publicSettings() });
+  });
+
+  const CLIENTS_ANNOUNCE_OPEN =
+  '🟢 <b>VEGA: торги открыты!</b>\n\n' +
+  'Снова принимаем заявки: BTC · LTC · USDT (TRC20/ERC20) и Google Gift Card 🎁\n' +
+  'Официальный обмен без документов и регистрации — в приложении и в боте.';
+const DIRECTION_KEYS = ['BTC', 'LTC', 'USDT_TRC20', 'USDT_ERC20', 'GOOGLE_USD'];
+  const feeValue = (v) => (Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= 50 ? Number(v) : null);
+
+  // Админка: частичное обновление настроек (чат, направления, комиссии, курс карты).
+  app.post('/api/admin/settings', async (req, res) => {
+    const a = needAuth(req, res);
+    if (!a) return;
+    if (!isAdminRequest(req)) return res.status(403).json({ error: 'Только для оператора VEGA' });
+    const body = req.body || {};
+    const patch = {};
+    // 1) Направления (вкл/выкл)
+    if (body.enabled && typeof body.enabled === 'object') {
+      const map = {};
+      for (const key of Object.keys(body.enabled)) {
+        if (!DIRECTION_KEYS.includes(key)) return res.status(400).json({ error: `Неизвестное направление: ${key}` });
+        if (typeof body.enabled[key] !== 'boolean') return res.status(400).json({ error: 'enabled: только true/false' });
+        map[key] = body.enabled[key];
+      }
+      patch.enabled = map;
+    }
+    // 2) Комиссии BTC/LTC и USDT
+    for (const key of ['feePercent', 'feePercentUSDTTRC20', 'feePercentUSDTERC20']) {
+      if (body[key] === undefined) continue;
+      const v = feeValue(body[key]);
+      if (v === null) return res.status(400).json({ error: 'Комиссия — число от 0 до 50 (%).' });
+      patch[key] = v;
+    }
+    // 3) Гифт-карта: комиссия (0–50) и ручной курс (0.01–100 USDT за $1)
+    if (body.giftPercent !== undefined) {
+      const v = feeValue(body.giftPercent);
+      if (v === null) return res.status(400).json({ error: 'Комиссия карты — число от 0 до 50 (%).' });
+      patch.giftPercent = v;
+    }
+    let manualGiftRate = null;
+    if (body.rateGOOGLEUSD !== undefined && body.rateGOOGLEUSD !== null && body.rateGOOGLEUSD !== '') {
+      const v = Number(body.rateGOOGLEUSD);
+      if (!Number.isFinite(v) || v <= 0 || v > 100) return res.status(400).json({ error: 'Курс карты — число от 0.01 до 100 USDT за $1.' });
+      manualGiftRate = v;
+    }
+    // 4) Открытие/закрытие торгов
+    let openTrading = null;
+    if (body.online !== undefined) {
+      if (typeof body.online !== 'boolean') return res.status(400).json({ error: 'online: только true/false' });
+      openTrading = body.online;
+    }
+    // 5) Ссылка на чат (тот же формат)
+    if (body.chat !== undefined) {
+      const chat = String(body.chat || '').trim().slice(0, 300);
+      if (chat.length < 8 || !/^(https:\/\/|@[A-Za-z0-9_]{5,32}$)/.test(chat)) {
+        return res.status(400).json({ error: 'Укажите ссылку t.me/… или юзернейм @…' });
+      }
+      patch.chat = chat;
+    }
+    if (openTrading !== null) patch.online = openTrading;
+    if (!Object.keys(patch).length && manualGiftRate === null) {
+      return res.status(400).json({ error: 'Нечего обновлять — пришлите хотя бы одно поле.' });
+    }
+    const wasOnline = !!store.get().settings.online;
+    store.mutate((db) => {
+      const s = db.settings;
+      if (patch.enabled) {
+        s.enabled = { ...(s.enabled || {}), ...patch.enabled };
+      }
+      for (const key of ['feePercent', 'feePercentUSDTTRC20', 'feePercentUSDTERC20', 'giftPercent', 'chat', 'online']) {
+        if (patch[key] !== undefined) s[key] = patch[key];
+      }
+    });
+    // Пересчёт итоговых курсов после смены комиссий (курс карты выводится из giftPercent).
+    if (['feePercent', 'feePercentUSDTTRC20', 'feePercentUSDTERC20', 'giftPercent'].some((k) => patch[k] !== undefined)) {
+      rates.recomputeWithFee();
+    }
+    // Ручной курс карты применяется ПОСЛЕ пересчёта (как set:rate_gift в боте).
+    if (manualGiftRate !== null) {
+      store.mutate((db) => { db.settings.rateGOOGLEUSD = manualGiftRate; });
+    }
+    // Открытие торгов: рассылаем клиентам объявление о начале торгов.
+    let announced = 0;
+    if (!wasOnline && patch.online === true) {
+      const results = await bus.emit('announce', { text: CLIENTS_ANNOUNCE_OPEN });
+      announced = (results && results[0] && results[0].sent) || 0;
+    }
+    res.json({ settings: store.publicSettings(), admin: adminSettingsBlock(), announced });
+  });
 
   // Админка: смена ссылки на чат — сразу видна всем на сайте и в приложении.
   app.post('/api/admin/settings/chat', (req, res) => {
@@ -208,39 +329,27 @@ function startWeb() {
       return res.json({ order: clientOrder(order) });
     }
 
-    /* ---------- покупка крипты за рубли ---------- */
-    const rate = currencies.rateOf(s, pair.currency, pair.network);
-    if (!rate) return res.status(400).json({ error: `Курс ${pair.label} ещё не настроен — выберите другое направление.` });
+    /* ---------- покупка крипты за рубли (сумму называет оператор после заявки) ---------- */
     const walletError = currencies.validateWallet(pair.currency, pair.network, wallet);
     if (walletError) return res.status(400).json({ error: walletError });
-    // Округляем выплату вниз до точности сети, чтобы не обещать больше, чем можем отправить.
+    // Округляем выплату вниз до точности сети.
     const floorCrypto = (v) => Math.floor(v * 10 ** pair.decimals + 1e-6) / 10 ** pair.decimals;
-    let rub = Number(req.body.rub);
-    let crypto = null;
-    const hasRub = req.body.rub !== undefined && req.body.rub !== null && req.body.rub !== '';
-    if (hasRub) {
-      if (!isFinite(rub) || rub <= 0) return res.status(400).json({ error: `Минимальная сумма — ${s.minRub} ₽` });
-    } else {
-      const amount = Number(req.body.cryptoAmount);
-      if (!isFinite(amount) || amount <= 0) return res.status(400).json({ error: `Минимальная сумма — ${s.minRub} ₽` });
-      rub = Math.ceil(amount * rate - 1e-6);
-      if (!isFinite(rub)) return res.status(400).json({ error: `Максимальная сумма — ${s.maxRub} ₽` });
-      crypto = floorCrypto(amount);
-      if (!(crypto > 0)) return res.status(400).json({ error: `Минимальная сумма — ${s.minRub} ₽` });
+    const crypto = floorCrypto(Number(req.body.cryptoAmount));
+    if (!Number.isFinite(Number(req.body.cryptoAmount)) || !(crypto > 0)) {
+      return res.status(400).json({ error: 'Укажите количество крипты — сколько хотите получить (например 0.001).' });
     }
-    if (rub < s.minRub) return res.status(400).json({ error: `Минимальная сумма — ${s.minRub} ₽` });
-    if (rub > s.maxRub) return res.status(400).json({ error: `Максимальная сумма — ${s.maxRub} ₽` });
+    if (crypto > 1e9) return res.status(400).json({ error: 'Слишком большая сумма — разделите заявку.' });
     const order = store.createOrder({
       userId: String(user.id),
       userName: user.name,
       userUsername: user.username,
       direction: 'buy',
-      rub,
+      rub: null, // рубль называет оператор — клиент соглашается или отказывается
       currency: pair.currency,
       network: pair.network,
       wallet,
-      rate,
-      crypto: crypto ?? floorCrypto(rub / rate),
+      rate: null,
+      crypto,
       referrer: user.referrer,
     });
     bus.emit('order_event', { order, type: 'new' });
@@ -370,6 +479,26 @@ function startWeb() {
     return res.json({ order: clientOrder(upd) });
   });
 
+  app.post('/api/order/:id/quote-accept', (req, res) => {
+    const a = needAuth(req, res);
+    if (!a) return;
+    const o = store.getOrder(req.params.id);
+    if (!o || o.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
+    const upd = quoteOps.acceptQuote(o.id);
+    if (!upd) return res.status(400).json({ error: 'Сумма уже согласована или заявка отменена.' });
+    res.json({ order: clientOrder(upd) });
+  });
+
+  app.post('/api/order/:id/quote-decline', (req, res) => {
+    const a = needAuth(req, res);
+    if (!a) return;
+    const o = store.getOrder(req.params.id);
+    if (!o || o.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
+    const upd = quoteOps.declineQuote(o.id);
+    if (!upd) return res.status(400).json({ error: 'Сумма уже согласована или заявка отменена.' });
+    res.json({ order: clientOrder(upd) });
+  });
+
   app.post('/api/order/:id/cancel', (req, res) => {
     const a = needAuth(req, res);
     if (!a) return;
@@ -423,6 +552,17 @@ function startWeb() {
       if (o.status !== 'new') return res.status(400).json({ error: 'Заявка уже в работе' });
       const upd = store.updateOrder(o.id, { status: 'details' });
       bus.emit('order_event', { order: upd, type: 'details' });
+      res.json({ order: clientOrder(upd) });
+    });
+    app.post('/api/admin/order/:id/quote', (req, res) => {
+      const o = store.getOrder(req.params.id);
+      if (!o) return res.status(404).json({ error: 'not found' });
+      if (o.direction === 'sell') return res.status(400).json({ error: 'Сумма в рублях только для покупки крипты' });
+      if (!['new', 'quote'].includes(o.status)) return res.status(400).json({ error: 'По этой заявке сумма уже согласована или сделка идёт' });
+      const rub = Number(req.body.rub);
+      if (!Number.isFinite(rub) || rub <= 0 || rub > 100000000) return res.status(400).json({ error: 'Укажите положительную сумму в рублях' });
+      const upd = quoteOps.setQuote(o.id, Math.round(rub));
+      bus.emit('order_event', { order: upd, type: 'quote_asked' });
       res.json({ order: clientOrder(upd) });
     });
     app.post('/api/admin/order/:id/req', (req, res) => {

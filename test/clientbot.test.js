@@ -75,15 +75,18 @@ test('group chats are ignored for client flow', async () => {
   assert.equal(calls.length, 0);
 });
 
-test('buy flow end-to-end: menu → exchange → BTC → rub → confirm → wallet → operator notified', async () => {
+test('buy flow end-to-end: menu → exchange → BTC → crypto amount → confirm → wallet → operator notified', async () => {
   const client = 1010;
   await text(client, '/start');
   await click(client, 'c:exchange');
   await click(client, 'c:buy:BTC');
-  assert.ok(String((lastCall('editMessageText') || {}).text).includes('BTC'));
-  await text(client, '10 000');
+  const prompt = String((lastCall('editMessageText') || {}).text);
+  assert.ok(prompt.includes('BTC'));
+  assert.ok(!/курс/i.test(prompt), 'курс клиенту не показываем');
+  await text(client, '0.001');
   const confirm = lastCall('sendMessage'); // текст-ответ — новым сообщением, не редактированием
   assert.ok(String(confirm.text).includes('Проверьте заявку'));
+  assert.ok(!/Курс/i.test(String(confirm.text)), 'в сводке курса нет');
   assert.ok(markupCallbacks(confirm).includes('c:ok_buy'));
   await click(client, 'c:ok_buy');
   await text(client, 'bc1' + 'a'.repeat(30));
@@ -91,8 +94,9 @@ test('buy flow end-to-end: menu → exchange → BTC → rub → confirm → wal
   assert.ok(order, 'заявка создана');
   assert.equal(order.currency, 'BTC');
   assert.equal(order.direction, 'buy');
-  assert.equal(order.rub, 10000);
-  assert.ok(order.crypto > 0);
+  assert.equal(order.rub, null, 'сумму в рублях называет оператор');
+  assert.equal(order.rate, null);
+  assert.equal(order.crypto, 0.001);
   // Оператор получил уведомление «новая заявка».
   assert.ok(calls.some((c) => c.method === 'sendMessage' && String(c.chat_id) === '111' && String(c.text).includes(`#${order.id}`)));
 });
@@ -117,7 +121,7 @@ test('buy order cannot be marked paid without a PDF receipt', async () => {
   await text(client, '/start');
   await click(client, 'c:exchange');
   await click(client, 'c:buy:LTC');
-  await text(client, '5000');
+  await text(client, '0.25');
   await click(client, 'c:ok_buy');
   await text(client, 'L' + 'b'.repeat(30));
   const order = store.get().orders.find((o) => String(o.userId) === String(client));
