@@ -169,7 +169,7 @@ test('calculator converts both ways and never mentions any fee', async (t) => {
   crypto.dispatchEvent(new a.window.Event('input', { bubbles: true }));
   assert.equal(rub.value, '10000');
   // Смена валюты пересчитывает пассивное поле, активное не трогает.
-  a.document.querySelectorAll('#segCur button')[1].click();
+  await pickAssetUi(a, 'LTC');
   assert.equal(crypto.value, '0.001');
   assert.equal(rub.value, String(Math.ceil(0.001 * settings.rateLTC - 1e-6)));
   assert.match(a.document.querySelector('#cryptoLimits').textContent, /LTC/);
@@ -230,17 +230,74 @@ async function usdtApp(t, order = initial) {
   return { window, calls, json, refresh: () => refresh(), handle: (fn) => { handler = fn; }, document: window.document };
 }
 
-test('direction segment offers BTC, LTC, USDT TRC20, USDT ERC20 and Google Gift Card', async (t) => {
-  const a = await usdtApp(t);
-  const buttons = [...a.document.querySelectorAll('#segCur button')];
-  assert.deepEqual(buttons.map((b) => b.dataset.c), ['BTC', 'LTC', 'USDT_TRC20', 'USDT_ERC20', 'GOOGLE_USD']);
-  assert.equal(buttons.filter((b) => b.classList.contains('on')).length, 1);
-  assert.match(a.document.querySelector('#cryptoLimits').textContent, /BTC/);
+// Выбор актива в новой логике: экран активов → шторка (группа → актив).
+async function pickAssetUi(a, key) {
+  const gift = key === 'GOOGLE_USD';
+  const group = a.document.querySelector(`[data-group="${gift ? 'gift' : 'crypto'}"]`);
+  assert.ok(group, 'на экране выбора активов есть нужная группа');
+  group.click();
+  const row = [...a.document.querySelectorAll('#sheetList .sheet-row')].find((b) => b.dataset.key === key);
+  assert.ok(row, `актив ${key} доступен в шторке`);
+  row.click();
+  await tick();
+}
+
+test('asset picker opens the exchange: sheets list assets, back returns to picker', async (t) => {
+  // Завершённая заявка не блокирует обмен: стартовый экран — выбор активов.
+  const done = { ...initial, status: 'completed' };
+  const a = await usdtApp(t, done);
+  assert.ok(!a.document.querySelector('#assetPicker').classList.contains('hidden'));
+  assert.ok(a.document.querySelector('#assetForm').classList.contains('hidden'));
+  // Криптовалюта — нижняя шторка со списком направлений.
+  a.document.querySelector('[data-group="crypto"]').click();
+  assert.ok(!a.document.querySelector('#assetSheet').classList.contains('hidden'));
+  let keys = [...a.document.querySelectorAll('#sheetList .sheet-row')].map((b) => b.dataset.key);
+  assert.deepEqual(keys, ['BTC', 'LTC', 'USDT_TRC20', 'USDT_ERC20']);
+  assert.equal(a.document.querySelectorAll('#sheetList .sheet-row.on').length, 1);
+  // Выбор USDT TRC20 открывает форму и закрывает шторку.
+  a.document.querySelector('.sheet-row[data-key="USDT_TRC20"]').click();
+  await tick();
+  assert.ok(a.document.querySelector('#assetPicker').classList.contains('hidden'));
+  assert.ok(!a.document.querySelector('#assetForm').classList.contains('hidden'));
+  assert.match(a.document.querySelector('#cryptoLimits').textContent, /USDT/);
+  // Кнопка назад возвращает к выбору активов.
+  a.document.querySelector('#btnBackToAssets').click();
+  assert.ok(!a.document.querySelector('#assetPicker').classList.contains('hidden'));
+  assert.ok(a.document.querySelector('#assetForm').classList.contains('hidden'));
+  // Подарочные карты — такая же шторка, но пока единственный вид: Google Gift Card.
+  a.document.querySelector('[data-group="gift"]').click();
+  keys = [...a.document.querySelectorAll('#sheetList .sheet-row')].map((b) => b.dataset.key);
+  assert.deepEqual(keys, ['GOOGLE_USD']);
+  assert.match(a.document.querySelector('#sheetFoot').textContent, /Google Gift Card/);
+  a.document.querySelector('#sheetClose').click();
+  // Выбор карты открывает форму карты.
+  a.document.querySelector('[data-group="gift"]').click();
+  a.document.querySelector('.sheet-row[data-key="GOOGLE_USD"]').click();
+  await tick();
+  assert.ok(!a.document.querySelector('#giftForm').classList.contains('hidden'));
+  assert.ok(a.document.querySelector('#buyForm').classList.contains('hidden'));
+  // И назад к выбору активов.
+  a.document.querySelector('#btnBackToAssets').click();
+  assert.ok(!a.document.querySelector('#assetPicker').classList.contains('hidden'));
+});
+
+test('after cancelling an order, «Создать заявку» returns to the asset picker', async (t) => {
+  const a = await usdtApp(t); // активная заявка BTC при старте
+  a.handle((url) => {
+    if (url === '/api/order/1/cancel') return a.json({ order: { ...initial, status: 'cancelled' } });
+    return null;
+  });
+  a.document.querySelector('#btnCancel').click();
+  await tick();
+  a.document.querySelector('#btnNew').click();
+  await tick();
+  assert.ok(!a.document.querySelector('#assetPicker').classList.contains('hidden'));
+  assert.ok(a.document.querySelector('#exOrder').classList.contains('hidden'));
 });
 
 test('USDT direction converts rub to 2-decimal amount and shows network', async (t) => {
   const a = await usdtApp(t);
-  a.document.querySelectorAll('#segCur button')[2].click();
+  await pickAssetUi(a, 'USDT_TRC20');
   assert.match(a.document.querySelector('#netPick').textContent, /TRC20/);
   assert.match(a.document.querySelector('#walHint').textContent, /только в сети TRC20/);
   assert.match(a.document.querySelector('#fMeta').textContent, /98[.,]75/);
@@ -259,7 +316,7 @@ test('USDT direction converts rub to 2-decimal amount and shows network', async 
 
 test('USDT order sends network and validates the address per network', async (t) => {
   const a = await usdtApp(t);
-  a.document.querySelectorAll('#segCur button')[2].click();
+  await pickAssetUi(a, 'USDT_TRC20');
   a.document.querySelector('#inRub').value = '10000';
   a.document.querySelector('#inWallet').value = '0x' + 'a'.repeat(40);
   a.document.querySelector('#btnGo').click();
@@ -277,17 +334,22 @@ test('USDT order sends network and validates the address per network', async (t)
   assert.equal(body.wallet, 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ');
 });
 
-test('disabled direction disappears from the segment without breaking the form', async (t) => {
+test('disabled direction disappears from the asset sheet without breaking the form', async (t) => {
   const a = await usdtApp(t);
   const withoutErc = {
     ...usdtSettings,
     rates: usdtSettings.rates.map((r) => (r.key === 'USDT_ERC20' ? { ...r, enabled: false, rate: null } : r)),
   };
   a.handle((url) => (url === '/api/settings' ? a.json(withoutErc) : null));
-  // Опрос настроек обновляет сегмент направлений на месте, без перезагрузки страницы.
+  // Опрос настроек обновляет шторку направлений, без перезагрузки страницы.
   await a.refresh();
-  const keys = [...a.document.querySelectorAll('#segCur button')].map((b) => b.dataset.c);
-  assert.deepEqual(keys, ['BTC', 'LTC', 'USDT_TRC20', 'GOOGLE_USD']);
+  a.document.querySelector('[data-group="crypto"]').click();
+  const keys = [...a.document.querySelectorAll('#sheetList .sheet-row')].map((b) => b.dataset.key);
+  assert.deepEqual(keys, ['BTC', 'LTC', 'USDT_TRC20']);
+  // Google Gift Card по-прежнему единственный вид в шторке подарочных карт.
+  a.document.querySelector('#sheetClose').click();
+  await pickAssetUi(a, 'GOOGLE_USD');
+  assert.ok(!a.document.querySelector('#giftForm').classList.contains('hidden'));
 });
 
 test('history shows USDT network and 2-decimal payout', async (t) => {
@@ -300,26 +362,29 @@ test('history shows USDT network and 2-decimal payout', async (t) => {
 
 /* ---------- Google Gift Card → USDT ---------- */
 
-test('Google Gift Card is one of the directions: picking it swaps the form', async (t) => {
+test('Google Gift Card from the sheet swaps the form', async (t) => {
   const a = await usdtApp(t);
+  await pickAssetUi(a, 'BTC');
   // По умолчанию — обычная покупка крипты, формы карты не видно.
   assert.ok(!a.document.querySelector('#buyForm').classList.contains('hidden'));
   assert.ok(a.document.querySelector('#giftForm').classList.contains('hidden'));
-  // Никаких отдельных режимов «купить/продать» — только направления.
+  // Никаких отдельных режимов «купить/продать» — только выбор актива.
   assert.equal(a.document.querySelector('#segMode'), null);
-  a.document.querySelectorAll('#segCur button')[4].click();
+  await pickAssetUi(a, 'GOOGLE_USD');
   assert.ok(a.document.querySelector('#buyForm').classList.contains('hidden'), 'поля рублей скрыты');
   assert.ok(!a.document.querySelector('#giftForm').classList.contains('hidden'), 'видна форма карты');
   assert.match(a.document.querySelector('#giftRule').textContent, /кратно \$10/);
+  // Кнопка назад к выбору активов всегда под рукой.
+  assert.ok(a.document.querySelector('#btnBackToAssets'));
   // Возврат к крипте — форма карты снова скрыта.
-  a.document.querySelectorAll('#segCur button')[0].click();
+  await pickAssetUi(a, 'BTC');
   assert.ok(!a.document.querySelector('#buyForm').classList.contains('hidden'));
   assert.ok(a.document.querySelector('#giftForm').classList.contains('hidden'));
 });
 
 test('gift nominal rounds to $10 and price is fixed: $10 → 8.5 USDT in any network', async (t) => {
   const a = await usdtApp(t);
-  a.document.querySelectorAll('#segCur button')[4].click();
+  await pickAssetUi(a, 'GOOGLE_USD');
   const units = a.document.querySelector('#inUnits');
   units.value = '37';
   units.dispatchEvent(new a.window.Event('input', { bubbles: true }));
@@ -343,7 +408,7 @@ test('gift nominal rounds to $10 and price is fixed: $10 → 8.5 USDT in any net
 
 test('selling a card sends units, code and wallet to the API', async (t) => {
   const a = await usdtApp(t);
-  a.document.querySelectorAll('#segCur button')[4].click();
+  await pickAssetUi(a, 'GOOGLE_USD');
   a.document.querySelector('#inUnits').value = '20';
   a.document.querySelector('#inGiftCode').value = 'ABCD-EFGH-IJKL-MNOP';
   a.document.querySelector('#inUsdtWallet').value = 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ';
@@ -370,7 +435,7 @@ test('selling a card sends units, code and wallet to the API', async (t) => {
 
 test('gift form rejects a missing code, a bad wallet and a nominal below $10', async (t) => {
   const a = await usdtApp(t);
-  a.document.querySelectorAll('#segCur button')[4].click();
+  await pickAssetUi(a, 'GOOGLE_USD');
   const units = a.document.querySelector('#inUnits');
   units.value = '5';
   units.dispatchEvent(new a.window.Event('input', { bubbles: true }));
@@ -403,7 +468,7 @@ test('completed gift order in history shows nominal and USDT payout', async (t) 
 
 test('gift form explains marketplaces, USD-only and the 1-hour deadline', async (t) => {
   const a = await usdtApp(t);
-  a.document.querySelectorAll('#segCur button')[4].click();
+  await pickAssetUi(a, 'GOOGLE_USD');
   const text = a.document.querySelector('#giftForm').textContent;
   assert.match(text, /Яндекс Маркет/);
   assert.match(text, /Ozon/);

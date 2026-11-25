@@ -31,7 +31,9 @@
   const $ = (s) => document.querySelector(s);
   const TERMINAL = ['completed', 'rejected', 'cancelled'];
   // dir — выбранное направление (ключ из /api/settings → rates[]).
-  const S = { settings: null, me: null, orders: [], order: null, tab: 'exchange', dir: 'BTC', isDemo: false, calcFrom: 'rub', support: [], mode: 'buy' };
+  // screen — на каком под-экране обмена мы находимся: «picker» (выбор активов) или «form» (форма обмена).
+  // sheet — какая шторка открыта (crypto | gift) или null.
+  const S = { settings: null, me: null, orders: [], order: null, tab: 'exchange', dir: 'BTC', isDemo: false, calcFrom: 'rub', support: [], mode: 'buy', screen: 'picker', sheet: null };
 
   // Резервный реестр направлений: нужен, если сервер старой версии не прислал rates.
   const FALLBACK_DIRS = [
@@ -221,6 +223,9 @@
     check: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 12.5 5 5 10-11"/></svg>',
     bolt: '<svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>',
     send: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>',
+    left: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
+    right: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
+    chevDown: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
   };
 
   function renderHeader() {
@@ -262,62 +267,183 @@
         if (S.tab === 'refs') renderRefs();
         if (S.tab === 'info') renderInfo();
         if (S.tab === 'support') renderSupport();
+        syncTgBack();
       })
     );
   }
 
-  // Кнопки направлений покупки — общие для первой отрисовки и живого обновления сегмента.
-  function segHtml() {
+  // ---------- Выбор актива: экран «Выбор активов для обмена» + нижние шторки ----------
+  // Обмен открывается на экране выбора активов (криптовалюта / подарочные карты).
+  // Сам выбор актива — всегда через нижнюю шторку: и для криптовалюты, и для подарочных карт.
+  // Пока принимаем только один вид карт — Google Gift Card.
+  let sheetCloseTimer = null;
+  let sheetFrames = [];
+  function sheetRowsFor(kind) {
+    return kind === 'gift' ? sellDirs() : buyDirs();
+  }
+  function renderAssetSheet(kind) {
+    const rows = sheetRowsFor(kind);
+    const cur = currentDir();
+    const $title = $('#sheetTitle');
+    if ($title) $title.textContent = kind === 'gift' ? 'Подарочные карты' : 'Криптовалюта';
+    const list = $('#sheetList');
+    if (!list) return;
+    list.innerHTML = rows.length
+      ? rows
+          .map((d) => {
+            const on = d.key === cur.key;
+            const sub =
+              kind === 'gift'
+                ? `1 $ = ${Number(d.rate) || 0} USDT · выплата в USDT`
+                : `1 ${d.currency} = ${fmtRate(d.rate)}${d.network ? ' · сеть ' + d.network : ''}`;
+            return `<button class="sheet-row${on ? ' on' : ''}" data-key="${esc(d.key)}" role="option" aria-selected="${on ? 'true' : 'false'}">
+              <span class="coin-ic ${esc(d.coin)}">${esc(d.symbol)}</span>
+              <span class="sheet-row-text"><b>${esc(d.label)}</b><i>${esc(sub)}</i></span>
+              <span class="sheet-check">${ICONS.check}</span>
+            </button>`;
+          })
+          .join('')
+      : '<div class="sheet-empty">Сейчас нет доступных направлений</div>';
+    const foot = $('#sheetFoot');
+    if (foot) {
+      foot.textContent = kind === 'gift' ? 'Пока принимаем только Google Gift Card — другие карты совсем скоро' : '';
+      foot.classList.toggle('hidden', !foot.textContent);
+    }
+    list.querySelectorAll('.sheet-row').forEach((b) =>
+      b.addEventListener('click', () => pickAsset(b.dataset.key))
+    );
+  }
+  function openAssetSheet(kind) {
+    S.sheet = kind;
+    if (sheetCloseTimer) { clearTimeout(sheetCloseTimer); sheetCloseTimer = null; }
+    renderAssetSheet(kind);
+    const sheet = $('#assetSheet');
+    if (!sheet) return;
+    sheet.classList.remove('hidden');
+    sheet.setAttribute('aria-hidden', 'false');
+    // Двойной rAF — чтобы шторка появилась в DOM до запуска слайд-анимации.
+    // Кадры отменяем при закрытии, чтобы «открыть и сразу закрыть» не оставляло шторку в подвисшем состоянии.
+    sheetFrames = [requestAnimationFrame(() => { sheetFrames[1] = requestAnimationFrame(() => sheet.classList.add('open')); })];
+    document.body.classList.add('sheet-lock');
+    syncTgBack();
+  }
+  function closeAssetSheet() {
+    S.sheet = null;
+    document.body.classList.remove('sheet-lock');
+    sheetFrames.forEach((f) => { try { cancelAnimationFrame(f); } catch (e) {} });
+    sheetFrames = [];
+    const sheet = $('#assetSheet');
+    if (!sheet || sheet.classList.contains('hidden')) { syncTgBack(); return; }
+    sheet.classList.remove('open');
+    sheet.setAttribute('aria-hidden', 'true');
+    if (sheetCloseTimer) clearTimeout(sheetCloseTimer);
+    sheetCloseTimer = setTimeout(() => sheet.classList.add('hidden'), 320);
+    syncTgBack();
+  }
+  function setScreen(name) {
+    S.screen = name;
+    const picker = $('#assetPicker');
+    const form = $('#assetForm');
+    if (picker) picker.classList.toggle('hidden', name !== 'picker');
+    if (form) form.classList.toggle('hidden', name !== 'form');
+    syncTgBack();
+  }
+  const goToAssetPicker = () => setScreen('picker');
+  function syncAssetChip() {
     const dir = currentDir();
-    const all = available();
-    return (all.length ? all : [dir])
-      .map(
-        (d) => `<button data-c="${esc(d.key)}" class="${d.key === dir.key ? 'on' : ''}">
-          <span class="sc-sym ${esc(d.coin)}">${esc(d.symbol)}</span>${esc(d.label)}
-        </button>`
-      )
-      .join('');
+    const ic = $('#chipIc');
+    if (ic) { ic.className = 'coin-ic ' + dir.coin; ic.textContent = dir.symbol; }
+    const lb = $('#chipLabel');
+    if (lb) lb.textContent = dir.label;
   }
-
-  // Оператор включил/выключил направление — сегмент обновляется без перезагрузки.
-  function syncSegment() {
-    const seg = $('#segCur');
-    if (!seg) return;
-    const keys = available().map((d) => d.key).join(',');
-    if (seg.dataset.keys === keys) return;
-    seg.dataset.keys = keys;
-    seg.innerHTML = segHtml();
-    seg.classList.toggle('seg-4', available().length > 2);
-    seg.querySelectorAll('button').forEach((b) =>
-      b.addEventListener('click', () => {
-        S.dir = b.dataset.c;
-        haptic('light');
-        seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
-        const d = currentDir();
-        if ($('#inWallet')) $('#inWallet').placeholder = d.walletHint;
-        renderFormMeta();
-      })
-    );
+  // Курсы/доступность могли измениться, пока форма открыта, — прячем опустевшие группы.
+  function syncPickerAvailability() {
+    const cryptoEmpty = buyDirs().length === 0;
+    const giftEmpty = sellDirs().length === 0;
+    const c = document.querySelector('[data-group="crypto"]');
+    if (c) c.closest('.picker-group').classList.toggle('hidden', cryptoEmpty);
+    const g = document.querySelector('[data-group="gift"]');
+    if (g) g.closest('.picker-group').classList.toggle('hidden', giftEmpty);
+    const empty = $('#pickerEmpty');
+    if (empty) empty.classList.toggle('hidden', !(cryptoEmpty && giftEmpty));
+    if (S.sheet) renderAssetSheet(S.sheet);
+    syncAssetChip();
+  }
+  function pickAsset(key) {
+    const want = dirs().find((d) => d.key === key);
+    if (!want) return;
+    S.dir = want.key;
+    haptic('medium');
+    closeAssetSheet();
+    setScreen('form');
+    const w = $('#inWallet');
+    if (w) w.placeholder = want.walletHint;
+    syncAssetChip();
+    renderFormMeta();
+  }
+  // Системная кнопка «назад» в Telegram: закрывает шторку, иначе возвращает к выбору активов.
+  function syncTgBack() {
+    try {
+      if (!tg || !tg.BackButton) return;
+      const need = S.tab === 'exchange' && !S.order && (S.screen === 'form' || !!S.sheet);
+      if (need) tg.BackButton.show(); else tg.BackButton.hide();
+    } catch (e) { /* не-Telegram окружение */ }
+  }
+  function onTgBackButton() {
+    if (S.sheet) { closeAssetSheet(); return; }
+    if (S.tab === 'exchange' && S.screen === 'form') goToAssetPicker();
   }
 
   function renderExchange() {
     const dir = currentDir();
-    const all = available();
-    const segButtons = segHtml();
     const sell = currentSellDir();
     const giftOn = sellDirs().length > 0;
+    const cryptoOn = buyDirs().length > 0;
     const step = Number(sell && sell.step) || 10;
     const minUnits = Number(sell && sell.minUnits) || step;
     $('#view-exchange').innerHTML = `
       <div id="exForm" class="${S.order ? 'hidden' : ''}">
-        <div id="buyForm">
+        <div id="assetPicker" role="region" aria-label="Выбор активов для обмена">
+          <div class="picker-head">
+            <div class="picker-title">Выбор активов для обмена</div>
+            <div class="picker-sub">Выберите, чем торгуем: криптовалюта или подарочная карта — откроется форма обмена.</div>
+          </div>
+          ${cryptoOn ? `
+          <div class="picker-group">
+            <div class="picker-group-label">КРИПТОВАЛЮТА</div>
+            <button class="group-card" data-group="crypto">
+              <span class="coin-ic btc group-ic">₿</span>
+              <span class="group-text"><b>Криптовалюта</b><i>BTC · LTC · USDT TRC20 / ERC20</i></span>
+              <span class="group-chev">${ICONS.right}</span>
+            </button>
+          </div>` : ''}
+          ${giftOn ? `
+          <div class="picker-group">
+            <div class="picker-group-label">ПОДАРОЧНЫЕ КАРТЫ</div>
+            <button class="group-card" data-group="gift">
+              <span class="coin-ic google group-ic">🎁</span>
+              <span class="group-text"><b>Подарочные карты</b><i>Google Gift Card — выплата в USDT</i></span>
+              <span class="group-chev">${ICONS.right}</span>
+            </button>
+          </div>` : ''}
+          <div class="picker-empty${cryptoOn || giftOn ? ' hidden' : ''}" id="pickerEmpty">Направления временно недоступны.<br>Загляните чуть позже.</div>
+        </div>
+        <div id="assetForm" class="hidden">
+          <div class="form-topbar">
+            <button class="back-btn" id="btnBackToAssets">${ICONS.left}<span>Выбор активов</span></button>
+            <button class="asset-chip" id="assetChip" aria-label="Сменить актив">
+              <span class="coin-ic ${esc(dir.coin)}" id="chipIc">${esc(dir.symbol)}</span>
+              <span class="asset-chip-label" id="chipLabel">${esc(dir.label)}</span>
+              ${ICONS.chevDown}
+            </button>
+          </div>
+          <div id="buyForm">
           <div class="card">
             <div class="card-title">Направление обмена</div>
             <div class="f-label"><span>Вы отдаёте</span><span id="mmLabel"></span></div>
             <div class="f-box"><div class="coin-ic rub">₽</div><input id="inRub" type="number" inputmode="decimal" placeholder="5 000" min="0" step="any"></div>
             <div class="f-sep"><div class="arr">${ICONS.down}</div></div>
             <div class="f-label"><span>Вы получаете</span><span id="cryptoLimits"></span></div>
-            <div class="seg seg-${Math.min(all.length || 1, 4)}" id="segCur">${segButtons}</div>
             <div id="netPick"></div>
             <div class="f-box" style="margin-top:10px"><div class="coin-ic" id="getIc">${esc(dir.symbol)}</div><input id="inCrypto" type="number" inputmode="decimal" placeholder="0.0005" min="0" step="any"></div>
             <div class="f-hint">Введите сумму в любом поле — второе посчитается автоматически</div>
@@ -363,22 +489,23 @@
           </div>
           <button class="btn btn-primary" style="margin-top:14px" id="btnSell">${ICONS.bolt}<span>Обменять карту на USDT</span></button>
         </div>
+        </div>
       </div>
       <div id="exOrder" class="${S.order ? '' : 'hidden'}"></div>
     `;
 
-    $('#segCur').dataset.keys = all.map((d) => d.key).join(',');
-    $('#segCur').querySelectorAll('button').forEach((b) =>
+    // Выбор актива: группы на экране выбора → нижние шторки (криптовалюта / подарочные карты).
+    $('#assetPicker').querySelectorAll('[data-group]').forEach((b) =>
       b.addEventListener('click', () => {
-        S.dir = b.dataset.c;
         haptic('light');
-        $('#segCur').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
-        const d = currentDir();
-        // Подставляем подсказку кошелька под новую сеть и пересчитываем второе поле.
-        $('#inWallet').placeholder = d.walletHint;
-        renderFormMeta();
+        openAssetSheet(b.dataset.group);
       })
     );
+    $('#btnBackToAssets').addEventListener('click', () => { haptic('light'); goToAssetPicker(); });
+    $('#assetChip').addEventListener('click', () => {
+      haptic('light');
+      openAssetSheet(isGiftDir(currentDir()) ? 'gift' : 'crypto');
+    });
     $('#inRub').addEventListener('input', () => { S.calcFrom = 'rub'; renderFormMeta(); });
     $('#inCrypto').addEventListener('input', () => { S.calcFrom = 'crypto'; renderFormMeta(); });
     $('#btnGo').addEventListener('click', submitOrder);
@@ -414,6 +541,8 @@
       });
       $('#btnSell').addEventListener('click', submitGiftOrder);
     }
+    setScreen(S.screen || 'picker');
+    syncAssetChip();
     renderFormMeta();
     renderOrderStage();
   }
@@ -425,18 +554,16 @@
     const rate = Number(dir.rate);
     const dec = displayOf(dir);
     const all = available();
-    if ($('#segCur')) syncSegment();
+    syncPickerAvailability();
     // Гифт-карта — отдельная форма: номинал в $ → USDT, без полей рублей и курса.
     const giftMode = isGiftDir(dir);
     if ($('#buyForm')) $('#buyForm').classList.toggle('hidden', giftMode);
     if ($('#giftForm')) $('#giftForm').classList.toggle('hidden', !giftMode);
     if (giftMode) return renderGiftMeta();
-    // Выбранное направление выключили — переключаем сегмент на доступное.
+    // Выбранное направление выключили — переключаемся на доступное.
     if (!rate || dir.enabled === false) {
       if (all.length) {
         S.dir = all[0].key;
-        const seg = $('#segCur');
-        if (seg) seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.c === S.dir));
         return renderFormMeta();
       }
       const btn0 = $('#btnGo');
@@ -728,6 +855,7 @@
   }
 
   function renderOrderStage() {
+    syncTgBack();
     const box = $('#exOrder');
     const o = S.order;
     if (!box) return;
@@ -927,9 +1055,12 @@
   function resetToForm() {
     S.order = null;
     haptic('light');
-    $('#exForm').classList.add('hidden');
-    $('#exOrder').classList.remove('hidden');
+    $('#exOrder').classList.add('hidden');
+    $('#exForm').classList.remove('hidden');
+    closeAssetSheet();
+    setScreen('picker');
     renderOrderStage();
+    syncTgBack();
   }
 
   function renderHistory() {
@@ -1265,6 +1396,19 @@
     window.addEventListener('pageshow', refresh);
     if (tg && tg.onEvent) tg.onEvent('activated', refresh);
   }
+
+  // Системная кнопка «назад» в Telegram и Escape на внешней клавиатуре.
+  if (tg && tg.BackButton && tg.BackButton.onClick) {
+    try { tg.BackButton.onClick(onTgBackButton); } catch (e) { /* старые клиенты */ }
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && S.sheet) closeAssetSheet();
+  });
+  // Нижняя шторка выбора актива — разовая привязка (она в index.html, вне #view-exchange).
+  const sheetCloseBtn = $('#sheetClose');
+  if (sheetCloseBtn) sheetCloseBtn.addEventListener('click', () => { haptic('light'); closeAssetSheet(); });
+  const sheetOverlay = $('#sheetOverlay');
+  if (sheetOverlay) sheetOverlay.addEventListener('click', closeAssetSheet);
 
   (async () => {
     try {

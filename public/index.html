@@ -37,6 +37,21 @@
     <nav class="nav" id="nav"></nav>
   </div>
 
+  <div id="assetSheet" class="sheet hidden" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="sheetTitle">
+    <div class="sheet-overlay" id="sheetOverlay"></div>
+    <div class="sheet-panel">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <div class="sheet-title" id="sheetTitle">Криптовалюта</div>
+        <button class="sheet-close" id="sheetClose" aria-label="Закрыть">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <div class="sheet-list" id="sheetList" role="listbox"></div>
+      <div class="sheet-foot hidden" id="sheetFoot"></div>
+    </div>
+  </div>
+
   <div id="toast" class="toast"></div>
   <script src="/app.js"></script>
 </body>
