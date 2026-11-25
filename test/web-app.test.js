@@ -464,6 +464,9 @@ test('completed gift order in history shows nominal and USDT payout', async (t) 
   assert.match(history, /\$50/);
   assert.match(history, /43\.56 USDT/);
   assert.ok(!/₽ → GOOGLE_USD/.test(history), 'в истории нет бессмысленной подписи рубль→карта');
+  assert.ok(!/GOOGLE_USD/.test(history), 'в истории нет сырого тикера GOOGLE_USD — сумма в USDT');
+  const row = a.document.querySelector('#view-history [data-order="1"]');
+  assert.equal(row.querySelector('.h-ic').classList.contains('google'), true, 'иконка гифт-заявки — Google');
 });
 
 test('gift form explains marketplaces, USD-only and the 1-hour deadline', async (t) => {

@@ -113,9 +113,16 @@
   // Параметры направления по заявке (в заявке хранятся currency + network).
   function dirOfOrder(o) {
     const d = dirs().find((x) => x.currency === o.currency && (x.network || null) === (o.network || null));
-    return d || FALLBACK_DIRS.find((x) => x.currency === o.currency && (x.network || null) === (o.network || null)) || { coin: String(o.currency || '').toLowerCase(), symbol: o.currency === 'BTC' ? '₿' : o.currency === 'LTC' ? 'Ł' : '₮', decimals: 8, display: o.currency === 'USDT' ? 2 : 8 };
+    if (d) return d;
+    // Гифт-карта: в заявке сеть выплаты (TRC20/ERC20), а направление одно — Google Gift Card.
+    if (isGiftOrder(o)) return dirs().find(isGiftDir) || FALLBACK_DIRS[4];
+    return FALLBACK_DIRS.find((x) => x.currency === o.currency && (x.network || null) === (o.network || null)) || { coin: String(o.currency || '').toLowerCase(), symbol: o.currency === 'BTC' ? '₿' : o.currency === 'LTC' ? 'Ł' : '₮', decimals: 8, display: o.currency === 'USDT' ? 2 : 8 };
   }
   const currenciesDecimals = (o) => displayOf(dirOfOrder(o));
+  // Сумма к выплате для показа клиенту: у гифт-карты всегда USDT, иначе — валюта направления.
+  const cryptoOf = (o) => (isGiftOrder(o)
+    ? fmtCrypto(o.crypto, 'USDT', 2)
+    : fmtCrypto(o.crypto, o.currency, currenciesDecimals(o)));
 
   const STATUS = {
     new: { label: 'Подбор реквизитов', color: '#ffb648' },
@@ -640,7 +647,7 @@
     const out = $('#outUsdt');
     const amount = (v) => (Math.round(v * 100) / 100).toFixed(2).replace(/\.?0+$/, '');
     if (out) {
-      // Показываем ровную цену: $10 → 8.5 USDT (без лишних нулей).
+      // Показываем ровную цену: $10 → 10 USDT при 0% комиссии (без лишних нулей).
       out.value = nominal && payout
         ? `${amount(payout)} USDT${network ? ' · ' + network : ''}`
         : '—';
@@ -888,7 +895,7 @@
       box.innerHTML = `
         <div class="card stage">
           ${chip('details')}
-          <div class="pay-dir">${ICONS.swap}<span>₽ → <b>${esc(dirLabel(o))}</b> · ${fmtCrypto(o.crypto, o.currency, currenciesDecimals(o))}</span></div>
+          <div class="pay-dir">${ICONS.swap}<span>₽ → <b>${esc(dirLabel(o))}</b> · ${cryptoOf(o)}</span></div>
           <div class="pay-amount"><div class="l">Переведите точно</div><div class="v">${fmtRub(o.payRub || o.rub)}</div></div>
           <div class="req-box" id="reqBox">${esc(o.requisites || 'Реквизиты готовятся…')}</div>
           <div class="copy-row">
@@ -900,7 +907,7 @@
             <button class="btn btn-ghost btn-sm" id="btnPick">📎 <span>${o.receipt ? 'Заменить чек (PDF)' : 'Прикрепить чек (PDF)'}</span></button>
             <div class="file-name ${o.receipt ? 'ok' : ''}" id="fileName">${o.receipt ? `✅ ${esc(o.receipt.name)} (${fmtSize(o.receipt.size)})` : 'Без чека оплата не подтвердится'}</div>
           </div>
-          <div class="note">Переведите <b>точную сумму</b> по реквизитам выше, прикрепите <b>чек в PDF</b>, затем нажмите кнопку ниже. После подтверждения оператор отправит ${fmtCrypto(o.crypto, o.currency, currenciesDecimals(o))} на ваш кошелёк.</div>
+          <div class="note">Переведите <b>точную сумму</b> по реквизитам выше, прикрепите <b>чек в PDF</b>, затем нажмите кнопку ниже. После подтверждения оператор отправит ${cryptoOf(o)} на ваш кошелёк.</div>
           <button class="btn btn-primary" style="margin-top:14px" id="btnPaid">${ICONS.check}<span>Я оплатил</span></button>
           <button class="btn btn-ghost" style="margin-top:8px" id="btnCancel">Отменить заявку</button>
         </div>`;
@@ -920,7 +927,7 @@
         <div class="card stage">
           <div class="spinner-wrap"><div class="spinner"></div><div class="spinner-ic">⏳</div></div>
           <div class="stage-title">Подтверждаем оплату</div>
-          <div class="stage-sub">Оператор проверяет поступление ${fmtRub(o.payRub || o.rub)} по заявке <b>#${o.id}</b>.<br>Как только платёж подтвердится — мы отправим ${fmtCrypto(o.crypto, o.currency, currenciesDecimals(o))}.</div>
+          <div class="stage-sub">Оператор проверяет поступление ${fmtRub(o.payRub || o.rub)} по заявке <b>#${o.id}</b>.<br>Как только платёж подтвердится — мы отправим ${cryptoOf(o)}.</div>
           ${o.receipt
             ? `<div class="note">🧾 Чек <b>${esc(o.receipt.name)}</b> отправлен оператору ✅</div>`
             : `<div class="file-box">
@@ -957,7 +964,7 @@
         <div class="card stage">
           <svg class="okmark" viewBox="0 0 100 100"><circle cx="50" cy="50" r="41"/><path d="M32 51l13 13 24-27"/></svg>
           <div class="stage-title">Обмен завершён!</div>
-          <div class="stage-sub">${fmtRub(o.payRub || o.rub)} → <b>${fmtCrypto(o.crypto, o.currency, currenciesDecimals(o))}</b> (${esc(dirLabel(o))})<br>отправлены на ваш кошелёк. Спасибо, что выбираете VEGA ✦</div>
+          <div class="stage-sub">${fmtRub(o.payRub || o.rub)} → <b>${cryptoOf(o)}</b> (${esc(dirLabel(o))})<br>отправлены на ваш кошелёк. Спасибо, что выбираете VEGA ✦</div>
           ${o.txUrl ? `
             <div class="tx-box">
               <div class="tx-label">🔗 Транзакция в блокчейне</div>
@@ -1092,7 +1099,7 @@
               ? `<div class="h-top"><span>$${giftNominal(o)} карта → USDT</span><span>${fmtCrypto(o.crypto, 'USDT', 2)}</span></div>`
               : `<div class="h-top"><span>₽ → ${esc(dirLabel(o))}</span><span>${fmtRub(o.payRub || o.rub)}</span></div>`}
             <div class="h-sub"><span>#${o.id}${o.receipt ? ' 🧾' : ''}${o.txUrl ? ' 🔗' : ''} · ${fmtDate(o.createdAt)}</span>${chip(o.status)}</div>
-            <div class="h-sub" style="margin-top:2px"><span>${esc(o.wallet.slice(0, 10) + '…' + o.wallet.slice(-6))}</span><b style="color:#9fd8ff">${fmtCrypto(o.crypto, o.currency, currenciesDecimals(o))}</b></div>
+            <div class="h-sub" style="margin-top:2px"><span>${esc(o.wallet.slice(0, 10) + '…' + o.wallet.slice(-6))}</span><b style="color:#9fd8ff">${cryptoOf(o)}</b></div>
             ${o.txUrl ? `<div class="h-sub" style="margin-top:6px"><a href="${esc(o.txUrl)}" target="_blank" rel="noopener" style="color:var(--teal);font-size:11px;word-break:break-all">🔗 ${esc(o.txUrl.slice(0,50))}…</a></div>` : ''}
           </div>
         </div>`
