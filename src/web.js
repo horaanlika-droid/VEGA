@@ -17,6 +17,9 @@ const clientOrder = (o) => ({
   units: o.units ?? null,
   giftCode: o.giftCode || null,
   receiptName: o.receiptName || null,
+  expiresAt: o.expiresAt ?? null,
+  paidAt: o.paidAt || null,
+  cancelReason: o.cancelReason || null,
   wallet: o.wallet,
   crypto: o.crypto,
   rate: o.rate,
@@ -38,16 +41,16 @@ const clientUser = (u) => ({
 });
 
 // Сколько USDT получит клиент, отдавший карту на units долларов.
-// Курс зависит от сети USDT: TRC20 и ERC20 считаются по своим курсам.
+// Курс карты — доля номинала в USDT (при 15%: $10 → 8.5 USDT), от сети не зависит.
 function giftPayout(settings, units, network) {
-  const rate = currencies.rateOf(settings, 'USDT', network);
-  if (!(rate > 0)) return null;
-  const usd = currencies.rateOf(settings, 'GOOGLE_USD', null);
-  if (!(usd > 0)) return null;
+  const cardRate = currencies.rateOf(settings, 'GOOGLE_USD', null);
+  if (!(cardRate > 0)) return null;
+  if (!currencies.isEnabled(settings, network === 'ERC20' ? 'USDT_ERC20' : 'USDT_TRC20')) return null;
   const dec = currencies.payoutDecimals('GOOGLE_USD');
   const mul = 10 ** dec;
-  const crypto = Math.floor(((Number(units) || 0) * usd) / rate * mul + 1e-6) / mul;
-  return { crypto, rate, giftRate: usd };
+  const crypto = Math.floor((Number(units) || 0) * cardRate * mul + 1e-6) / mul;
+  const usdtRate = currencies.rateOf(settings, 'USDT', network);
+  return { crypto, rate: cardRate, cardRate, usdtRate };
 }
 
 function startWeb() {
@@ -170,12 +173,14 @@ function startWeb() {
       if (!(payout.crypto > 0)) {
         return res.status(400).json({ error: 'Слишком маленькая сумма к выплате — увеличьте номинал карты.' });
       }
+      const ttlMinutes = Number(pair.ttlMinutes) || 60;
       const order = store.createOrder({
         userId: String(user.id),
         userName: user.name,
         userUsername: user.username,
         direction: 'sell',
-        rub: Math.round(units * payout.giftRate),
+        expiresAt: Date.now() + ttlMinutes * 60 * 1000, // час на сделку
+        rub: Math.round(payout.crypto * (payout.usdtRate || 0)), // справочная сумма в ₽
         units,
         currency: pair.currency,
         network: giftNetwork,
@@ -231,9 +236,9 @@ function startWeb() {
   app.get('/api/order/:id', (req, res) => {
     const a = needAuth(req, res);
     if (!a) return;
-    const o = store.getOrder(req.params.id);
-    if (!o || o.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
-    res.json({ order: clientOrder(o) });
+    const found = store.getOrder(req.params.id);
+    if (!found || found.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
+    res.json({ order: clientOrder(store.expireIfNeeded(found) || found) });
   });
 
   app.post('/api/order/:id/receipt', (req, res) => {
@@ -289,8 +294,15 @@ function startWeb() {
   app.post('/api/order/:id/paid', (req, res) => {
     const a = needAuth(req, res);
     if (!a) return;
-    const o = store.getOrder(req.params.id);
-    if (!o || o.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
+    const found = store.getOrder(req.params.id);
+    if (!found || found.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
+    const o = store.expireIfNeeded(found);
+    // Гифт-карта: клиент прислал код и подтверждает готовность сделки — начинается проверка.
+    if (o.direction === 'sell' && o.status === 'new') {
+      const upd = store.updateOrder(o.id, { status: 'paid', paidAt: Date.now() });
+      bus.emit('order_event', { order: upd, type: 'paid' });
+      return res.json({ order: clientOrder(upd) });
+    }
     if (o.status === 'details') {
       if (!o.receipt) {
         return res.status(400).json({ error: 'Сначала прикрепите чек в формате PDF' });
@@ -305,8 +317,12 @@ function startWeb() {
   app.post('/api/order/:id/cancel', (req, res) => {
     const a = needAuth(req, res);
     if (!a) return;
-    const o = store.getOrder(req.params.id);
-    if (!o || o.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
+    const found = store.getOrder(req.params.id);
+    if (!found || found.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
+    const o = store.expireIfNeeded(found);
+    if (o.status === 'cancelled' && o.cancelReason === store.EXPIRED) {
+      return res.status(400).json({ error: `${store.EXPIRED} — создайте новую заявку.` });
+    }
     if (['new', 'details'].includes(o.status)) {
       const upd = store.updateOrder(o.id, { status: 'cancelled' });
       bus.emit('order_event', { order: upd, type: 'cancelled' });

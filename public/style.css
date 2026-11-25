@@ -129,10 +129,8 @@ body {
 .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; background: rgba(2, 10, 20, 0.55); border: 1px solid var(--line); border-radius: 15px; padding: 5px; }
 /* Четыре направления (BTC / LTC / USDT TRC20 / USDT ERC20) — сетка 2×2. */
 .seg.seg-3, .seg.seg-4 { grid-template-columns: 1fr 1fr; }
-/* Переключатель «купить / продать карту» */
-.modes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px; padding: 5px; border-radius: 15px; background: rgba(2,10,20,.55); border: 1px solid var(--line); }
-.modes button { border: none; border-radius: 11px; padding: 11px 6px; background: transparent; color: var(--mut); font: 800 12.5px 'Manrope', sans-serif; cursor: pointer; transition: all .18s; }
-.modes button.on { background: linear-gradient(92deg, rgba(0,200,255,.9), rgba(23,233,192,.9)); color: #032730; box-shadow: 0 4px 16px rgba(23,233,192,.28); }
+/* Пятое направление — Google Gift Card — на всю ширину */
+.seg.seg-4 button:last-child:nth-child(odd) { grid-column: 1 / -1; }
 /* Быстрые номиналы подарочных карт */
 .seg.gift-nom { grid-template-columns: repeat(4, 1fr); }
 .seg.gift-nom button { font-size: 12.5px; padding: 9px 0; }
@@ -143,6 +141,19 @@ input[readonly] { color: #9fe8d6 !important; }
 .seg button .sc-sym.ltc { color: #c3d2e6; }
 .seg button .sc-sym.usdt { color: #26a17b; }
 .seg button.on .sc-sym { color: inherit; }
+/* Сноски-подсказки в форме (маркетплейсы, валюта карты, срок сделки) */
+.info-note {
+  font-size: 11.5px; line-height: 1.55; color: var(--mut);
+  background: rgba(0, 200, 255, 0.06); border: 1px solid rgba(0, 200, 255, 0.16);
+  border-radius: 12px; padding: 9px 12px;
+}
+.info-note b { color: #bfe9ff; }
+.info-warn {
+  margin-top: 8px; font-size: 11.5px; line-height: 1.5; color: #ffd08a;
+  background: rgba(255, 182, 72, 0.08); border: 1px solid rgba(255, 182, 72, 0.24);
+  border-radius: 12px; padding: 9px 12px;
+}
+.info-warn b { color: #ffdca8; }
 .net-note { margin-top: 9px; font-size: 11px; line-height: 1.45; color: var(--mut); background: rgba(0, 200, 255, 0.06); border: 1px solid rgba(0, 200, 255, 0.16); border-radius: 12px; padding: 8px 11px; }
 .net-note b { color: #bfe9ff; }
 .pay-dir { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--mut); margin-bottom: 10px; }
@@ -264,6 +275,8 @@ input[readonly] { color: #9fe8d6 !important; }
 .h-ic.btc { background: rgba(247, 147, 26, 0.15); color: #f7931a; border: 1px solid rgba(247, 147, 26, 0.3); }
 .h-ic.ltc { background: rgba(190, 205, 225, 0.12); color: #c3d2e6; border: 1px solid rgba(190, 205, 225, 0.28); }
 .h-ic.usdt { background: rgba(38, 161, 123, 0.15); color: #35d6a4; border: 1px solid rgba(38, 161, 123, 0.32); position: relative; }
+.h-item { cursor: pointer; transition: border-color .18s, transform .12s; }
+.h-item:active { transform: scale(.995); }
 .h-ic.google { background: rgba(74, 140, 255, 0.14); color: #8db8ff; border: 1px solid rgba(74, 140, 255, 0.3); position: relative; }
 .h-ic small { position: absolute; right: -3px; bottom: -3px; font-size: 6.5px; font-weight: 800; letter-spacing: .02em; padding: 1px 3px; border-radius: 5px; background: #08202b; border: 1px solid rgba(38, 161, 123, 0.45); color: #6fe6c4; }
 .h-main { flex: 1; min-width: 0; }

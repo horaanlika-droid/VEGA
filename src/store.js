@@ -19,9 +19,9 @@ const defaults = () => ({
     feePercentUSDTERC20: 5, // комиссия по USDT ERC20 (дорогие комиссии сети)
     rateUSDTTRC20: 100, // стартовые итоговые курсы для USDT (₽ за 1 USDT)
     rateUSDTERC20: 101,
-    baseRateGOOGLEUSD: null, // официальный курс USD → ₽ (ЦБ) без наценки
-    feePercentGOOGLEUSD: 8, // наценка на подарочные карты Google, %
-    rateGOOGLEUSD: 105, // стартовый итоговый курс (₽ за $1 номинала)
+    // Google Gift Card: скидка от номинала и фиксированный курс USDT за $1 номинала.
+    giftPercent: 15, // скидка 15% → $10 карта даёт 8.5 USDT
+    rateGOOGLEUSD: 0.85, // курс: 0.85 USDT за $1 номинала = (100 − giftPercent) / 100
     enabled: { BTC: true, LTC: true, USDT_TRC20: true, USDT_ERC20: true, GOOGLE_USD: true },
     rateUpdatedAt: null,
     rateSource: 'manual',
@@ -183,6 +183,8 @@ function createOrder(o) {
       wallet: o.wallet || '',
       rate: o.rate,
       crypto: o.crypto,
+      expiresAt: o.expiresAt ?? null, // срок на сделку (гифт-карты — 1 час)
+      paidAt: null, // когда клиент нажал «Я оплатил»
       status: 'new',
       requisites: null,
       payRub: null,
@@ -200,6 +202,16 @@ function createOrder(o) {
 }
 
 const getOrder = (id) => db.orders.find((o) => o.id === Number(id)) || null;
+
+// Заявка с истёкшим сроком переводится в «отменена» и больше не принимает действий.
+// Отметка «Я оплатил» фиксирует сделку: дальше срок не действует, оператор проверяет вручную.
+const EXPIRED = 'Срок на сделку истёк';
+function expireIfNeeded(order) {
+  if (!order || !order.expiresAt) return order;
+  if (['completed', 'rejected', 'cancelled', 'paid'].includes(order.status)) return order;
+  if (Date.now() < Number(order.expiresAt)) return order;
+  return updateOrder(order.id, { status: 'cancelled', cancelReason: EXPIRED });
+}
 
 // Чек не конфликтует с вводом оператора, поэтому версию заявки не трогаем.
 function setReceipt(id, receipt) {
@@ -222,9 +234,13 @@ function updateOrder(id, patch) {
 }
 
 const userOrders = (userId) =>
-  db.orders.filter((o) => o.userId === String(userId)).sort((a, b) => b.createdAt - a.createdAt);
+  db.orders
+    .filter((o) => o.userId === String(userId))
+    .map(expireIfNeeded)
+    .sort((a, b) => b.createdAt - a.createdAt);
 
-const activeOrders = () => db.orders.filter((o) => ['new', 'details', 'paid'].includes(o.status));
+const activeOrders = () =>
+  db.orders.filter((o) => ['new', 'details', 'paid'].includes(o.status)).map(expireIfNeeded).filter(Boolean);
 
 function stats() {
   const by = (s) => db.orders.filter((o) => o.status === s);
@@ -295,6 +311,8 @@ module.exports = {
   getUser,
   createOrder,
   getOrder,
+  expireIfNeeded,
+  EXPIRED,
   updateOrder,
   setReceipt,
   userOrders,

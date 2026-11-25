@@ -84,6 +84,7 @@ const PAIRS = {
   },
   // Подарочные карты: клиент отдаёт код карты с номиналом в долларах, мы проверяем
   // его и выплачиваем USDT (сеть выбирает клиент). Номинал — от $10 и кратно $10.
+  // Курс фиксированный относительно номинала: $10 → 8.5 USDT при скидке 15%.
   GOOGLE_USD: {
     key: 'GOOGLE_USD',
     direction: 'sell',
@@ -97,10 +98,12 @@ const PAIRS = {
     decimals: 0, // номинал храним целым числом долларов
     display: 0,
     rateDecimals: 2,
-    // Курс — сколько ₽ мы платим за $1 номинала (ниже официального USD на feePercentGOOGLEUSD).
+    // Курс — сколько USDT платим за $1 номинала: (100 − giftPercent) / 100.
+    // При giftPercent = 15 получается 0.85 → карта $10 даёт 8.5 USDT.
     rateKey: 'rateGOOGLEUSD',
-    baseKey: 'baseRateGOOGLEUSD',
-    feeKey: 'feePercentGOOGLEUSD',
+    baseKey: null,
+    feeKey: 'giftPercent',
+    rateLabel: 'USDT за $1 номинала',
     unit: 'USD',
     step: 10, // номинал кратен $10
     minUnits: 10, // минимум $10
@@ -109,6 +112,12 @@ const PAIRS = {
     walletPattern: '^(T[1-9A-HJ-NP-Za-km-z]{33}|0x[0-9a-fA-F]{40})$',
     walletError: 'Укажите адрес USDT: TRC20 начинается с T (34 символа), ERC20 — 0x и 40 hex-символов.',
     networkByWallet: true, // сеть определяем по адресу
+    // Сноска для клиента: где взять карту и какую валюту выбирать.
+    infoNote:
+      'Карту можно купить на любом маркетплейсе — Яндекс Маркет, Ozon, Wildberries и т. д. ' +
+      'Выбирайте карту именно в USD (долларах США): карты в рублях и других валютах не принимаются.',
+    currencyNote: 'Проверьте валюту карты: нужен номинал в USD ($).',
+    ttlMinutes: 60, // час на сделку
     note: 'Код карты оператор проверит вручную и сразу выплатит USDT на указанный кошелёк.',
   },
 };
@@ -283,6 +292,10 @@ function publicRates(settings) {
     networkHint: networkHint(p.network),
     kind: p.kind || 'crypto',
     unit: p.unit || null,
+    rateLabel: p.rateLabel || null,
+    infoNote: p.infoNote || null,
+    currencyNote: p.currencyNote || null,
+    ttlMinutes: p.ttlMinutes || null,
     step: p.step || null,
     minUnits: p.minUnits || null,
     walletOptional: !!p.walletOptional,
@@ -297,6 +310,20 @@ function publicRates(settings) {
 
 // Пул выплат по гифт-картам: из него оператор отправляет USDT клиенту.
 // В боте показываем диапазон курса двух сетей — их и видит клиент.
+// Курс гифт-карты: сколько USDT даём за $1 номинала (0.85 при скидке 15%).
+const giftRateFromPercent = (percent) => {
+  const p = Number(percent);
+  const safe = Number.isFinite(p) ? Math.min(Math.max(p, 0), 95) : 0;
+  return Math.round((100 - safe)) / 100;
+};
+
+// Обратный пересчёт: какой процент соответствует курсу (для ручного ввода).
+const giftPercentFromRate = (rate) => {
+  const r = Number(rate);
+  if (!(r > 0) || r > 100) return 0;
+  return Math.round((100 - r * 100) * 100) / 100;
+};
+
 function giftPayouts(settings) {
   if (!settings) return [];
   return ['TRC20', 'ERC20']
@@ -330,6 +357,8 @@ module.exports = {
   networkByWallet,
   payoutDecimals,
   payoutCurrency,
+  giftRateFromPercent,
+  giftPercentFromRate,
   giftPayouts,
   stepOf,
   minUnitsOf,

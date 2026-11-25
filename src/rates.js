@@ -2,6 +2,7 @@
 // Итоговый курс для клиентов = официальный × (1 + комиссия/100).
 // Комиссию задаёт оператор в админ-панели, официальный курс трогать не нужно.
 const store = require('./store');
+const currencies = require('./currencies');
 
 const INTERVAL_MS = Number(process.env.RATES_INTERVAL_MS) || 5 * 60 * 1000;
 const DISABLED = process.env.RATES_DISABLED === '1';
@@ -209,9 +210,8 @@ function applyRates(official) {
     s.rateLTC = applyFee(official.ltc, fee);
     s.rateUSDTTRC20 = applyFee(official.usdt, Number(s.feePercentUSDTTRC20) || 0, 2);
     s.rateUSDTERC20 = applyFee(official.usdt, Number(s.feePercentUSDTERC20) || 0, 2);
-    s.baseRateGOOGLEUSD = Math.round(official.usd * 100) / 100;
-    // Клиент отдаёт карту, поэтому мы платим меньше официального курса: скидка = комиссия.
-    s.rateGOOGLEUSD = applyDiscount(official.usd, Number(s.feePercentGOOGLEUSD) || 0, 2);
+    // Курс карты не зависит от курса доллара: это доля номинала в USDT.
+    s.rateGOOGLEUSD = currencies.giftRateFromPercent(s.giftPercent);
     s.rateUpdatedAt = Date.now();
     s.rateSource = official.source;
     return s;
@@ -229,9 +229,7 @@ function recomputeWithFee() {
       s.rateUSDTTRC20 = applyFee(s.baseRateUSDT, Number(s.feePercentUSDTTRC20) || 0, 2);
       s.rateUSDTERC20 = applyFee(s.baseRateUSDT, Number(s.feePercentUSDTERC20) || 0, 2);
     }
-    if (s.baseRateGOOGLEUSD) {
-      s.rateGOOGLEUSD = applyDiscount(s.baseRateGOOGLEUSD, Number(s.feePercentGOOGLEUSD) || 0, 2);
-    }
+    s.rateGOOGLEUSD = currencies.giftRateFromPercent(s.giftPercent);
     return s;
   });
 }
