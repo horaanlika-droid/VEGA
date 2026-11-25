@@ -1288,6 +1288,15 @@
           <button class="btn btn-ghost btn-sm" id="lcGoRefs">${ICONS.right}<span>Как это работает</span></button>
         </div>` : ''}
       </div>
+      ${S.me.isAdmin ? `
+      <div class="card">
+        <div class="card-title">🛠 Админка</div>
+        <div class="about" style="font-size:12px;color:var(--mut);margin-bottom:10px;line-height:1.55">Ссылка на чат поддержки. Сохраняется сразу и видна всем на сайте и в приложении. Та же настройка меняется в боте: ⚙️ Настройки → 💬 Чат.</div>
+        <label class="f-label" for="lcChatLink"><span>Ссылка на чат</span></label>
+        <div class="f-box"><input id="lcChatLink" placeholder="https://t.me/… или @юзернейм" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+        <div class="f-err" id="lcChatErr"></div>
+        <button class="btn btn-primary" style="margin-top:10px" id="lcChatSave"><span>Сохранить ссылку</span></button>
+      </div>` : ''}
       <div class="card">
         <div class="card-title">Связь с нами</div>
         <div class="contacts">
@@ -1304,6 +1313,36 @@
     if (goRefs) goRefs.addEventListener('click', () => goTab('refs'));
     const go = $('#goSupport');
     if (go) go.addEventListener('click', () => goTab('support'));
+    const chatInput = $('#lcChatLink');
+    if (chatInput) {
+      chatInput.value = S.settings.chat || '';
+      const errEl = $('#lcChatErr');
+      const saveBtn = $('#lcChatSave');
+      chatInput.addEventListener('input', () => { errEl.textContent = ''; });
+      saveBtn.addEventListener('click', async () => {
+        const chat = (chatInput.value || '').trim();
+        errEl.textContent = '';
+        if (!/^(https:\/\/|@[A-Za-z0-9_]{5,32}$)/.test(chat) || chat.length < 8) {
+          errEl.textContent = 'Укажите ссылку t.me/… или юзернейм @… (например https://t.me/+abc или @vega_support).';
+          return;
+        }
+        saveBtn.disabled = true;
+        haptic('medium');
+        try {
+          const r = await api('/api/admin/settings/chat', { method: 'POST', body: { chat } });
+          S.settings = r.settings;
+          renderAnnounce();
+          toast('Ссылка на чат сохранена — уже видна всем ✅');
+          renderProfile(); // пересобираем контакты и поле со свежей ссылкой
+          return;
+        } catch (e) {
+          errEl.textContent = e.message;
+          toast(e.message);
+        } finally {
+          saveBtn.disabled = false;
+        }
+      });
+    }
   }
 
   // Переключение вкладки нижнего меню (для кнопок внутри экранов).

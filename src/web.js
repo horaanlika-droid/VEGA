@@ -6,6 +6,7 @@ const bus = require('./bus');
 const receipts = require('./receipts');
 const currencies = require('./currencies');
 const { validateInitData, parseUser } = require('./validate');
+const admins = require('./admins');
 
 const clientOrder = (o) => ({
   id: o.id,
@@ -32,12 +33,15 @@ const clientOrder = (o) => ({
   updatedAt: o.updatedAt,
 });
 
+// isAdmin нужен приложению, чтобы показать «Админку» (правка ссылки на чат).
+// В демо-режиме (BOT_TOKEN не задан) админка открыта всем — как и демо-пульт оператора.
 const clientUser = (u) => ({
   id: u.id,
   name: u.name,
   username: u.username,
   referrer: u.referrer,
   referredCount: u.referredCount || 0,
+  isAdmin: !config.botToken || admins.has(String(u.id)),
 });
 
 function startWeb() {
@@ -116,6 +120,21 @@ function startWeb() {
   });
 
   app.get('/api/settings', (req, res) => res.json(store.publicSettings()));
+
+  // Админка: смена ссылки на чат — сразу видна всем на сайте и в приложении.
+  app.post('/api/admin/settings/chat', (req, res) => {
+    const a = needAuth(req, res);
+    if (!a) return;
+    if (config.botToken && !admins.has(String(a.user.id))) {
+      return res.status(403).json({ error: 'Только для оператора VEGA' });
+    }
+    const chat = String(req.body?.chat || '').trim().slice(0, 300);
+    if (chat.length < 8 || !/^(https:\/\/|@[A-Za-z0-9_]{5,32}$)/.test(chat)) {
+      return res.status(400).json({ error: 'Укажите ссылку t.me/… или юзернейм @… (например https://t.me/+abc или @vega_support)' });
+    }
+    store.mutate((db) => { db.settings.chat = chat; });
+    res.json({ settings: store.publicSettings() });
+  });
 
   app.get('/api/me', (req, res) => {
     const a = needAuth(req, res);

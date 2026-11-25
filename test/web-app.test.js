@@ -202,7 +202,7 @@ const usdtSettings = {
 };
 
 // Приложение с настройками, где есть USDT.
-async function usdtApp(t, order = initial) {
+async function usdtApp(t, order = initial, me = { id: 999 }) {
   const dom = new JSDOM(html, { url: 'https://vega.example', runScripts: 'outside-only', pretendToBeVisual: true });
   t.after(() => dom.window.close());
   const { window } = dom;
@@ -217,8 +217,8 @@ async function usdtApp(t, order = initial) {
     calls.push({ pathname, ...options });
     const custom = handler(pathname, options);
     if (custom) return custom;
-    if (pathname === '/api/init') return json({ settings: usdtSettings, me: { id: 999 }, demo: false });
-    if (pathname === '/api/me') return json({ orders: [order], me: { id: 999 } });
+    if (pathname === '/api/init') return json({ settings: usdtSettings, me, demo: false });
+    if (pathname === '/api/me') return json({ orders: [order], me });
     if (pathname === '/api/settings') return json(usdtSettings);
     if (pathname === '/api/order/1') return json({ order });
     if (pathname === '/api/orders') return json({ order: { ...initial, id: 2, currency: 'USDT', network: 'TRC20' } });
@@ -580,8 +580,32 @@ test('ЛК клиента: вкладка «ЛК» вместо «Инфо» —
   assert.match(view.textContent, /завершено/);
   assert.match(view.textContent, /Реферальная программа/);
   assert.match(view.textContent, /Связь с нами/);
+  assert.equal(a.document.querySelector('#lcChatLink'), null, 'обычный клиент не видит админку');
   // Кнопка «Открыть чат поддержки» переводит на вкладку Чат.
   a.document.querySelector('#goSupport').click();
   await tick();
   assert.ok(!a.document.querySelector('#view-support').classList.contains('hidden'));
+});
+
+
+test('ЛК: админ видит «Админку» и сохраняет новую ссылку на чат', async (t) => {
+  const a = await usdtApp(t, initial, { id: 42, name: 'Шеф', isAdmin: true });
+  a.document.querySelector('[data-tab="profile"]').click();
+  await tick();
+  const input = a.document.querySelector('#lcChatLink');
+  assert.ok(input, 'админ видит поле ссылки на чат');
+  assert.equal(input.value, usdtSettings.chat, 'поле предзаполнено текущей ссылкой');
+  a.handle((url) => {
+    if (url === '/api/admin/settings/chat') {
+      return a.json({ settings: { ...usdtSettings, chat: 'https://t.me/+brand_new_chat' } });
+    }
+    return null;
+  });
+  input.value = 'https://t.me/+brand_new_chat';
+  a.document.querySelector('#lcChatSave').click();
+  await tick();
+  const post = a.calls.find((c) => c.pathname === '/api/admin/settings/chat');
+  assert.ok(post, 'ссылка ушла на сервер');
+  assert.equal(JSON.parse(post.body).chat, 'https://t.me/+brand_new_chat');
+  assert.match(a.document.querySelector('#view-profile').innerHTML, /brand_new_chat/, 'контакты пересобраны со свежей ссылкой');
 });

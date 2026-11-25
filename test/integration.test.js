@@ -770,6 +770,31 @@ test('gift commission: default 0% → $1 = 1 USDT; admin sets the commission', a
   assert.equal((await check.json()).order.crypto, 10);
 });
 
+test('admin changes the support chat link from the app; clients see it live', async () => {
+  const newChat = 'https://t.me/+vega_new_chat_link';
+  // Обычный клиент не может менять ссылку.
+  const forbidden = await api('/api/admin/settings/chat', { method: 'POST', body: { chat: newChat } });
+  assert.equal(forbidden.status, 403);
+  // Админ (111) — может.
+  const ok = await api('/api/admin/settings/chat', { id: 111, method: 'POST', body: { chat: newChat } });
+  assert.equal(ok.status, 200);
+  assert.equal(store.get().settings.chat, newChat);
+  const pub = await (await fetch(`http://127.0.0.1:${server.address().port}/api/settings`)).json();
+  assert.equal(pub.chat, newChat, 'ссылка сразу видна клиентам');
+  // Кривой ввод отклоняется.
+  const bad = await api('/api/admin/settings/chat', { id: 111, method: 'POST', body: { chat: 'не ссылка' } });
+  assert.equal(bad.status, 400);
+  // /api/me отдаёт флаг админа.
+  const meRes = await api('/api/me', { id: 111 });
+  assert.equal((await meRes.json()).me.isAdmin, true);
+  const meClient = await api('/api/me');
+  assert.equal((await meClient.json()).me.isAdmin, false);
+  // Возвращаем исходную ссылку из умолчаний.
+  const restore = await api('/api/admin/settings/chat', { id: 111, method: 'POST', body: { chat: 'https://t.me/+tY5b6RUJ0xUwNmNh' } });
+  assert.equal(restore.status, 200);
+  assert.equal(store.get().settings.chat, 'https://t.me/+tY5b6RUJ0xUwNmNh');
+});
+
 test('disabled gift direction rejects new cards but keeps old orders', async () => {
   const old = (await (await api('/api/orders', {
     method: 'POST',
