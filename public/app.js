@@ -212,6 +212,16 @@
     }
   }
 
+  // Официальный знак Google «G» — логотип подарочных карт вместо эмодзи.
+  const GIFT_ICON =
+    '<svg viewBox="0 0 48 48" style="width:66%;height:66%;display:block" role="img" aria-label="Google Gift Card">' +
+    '<path fill="#4285F4" d="M45.12 24.5c0-1.56-.14-3.06-.4-4.5H24v9h11.84c-.51 2.75-2.06 5.08-4.39 6.64v5.52h7.11c4.16-3.83 6.56-9.47 6.56-16.16z"/>' +
+    '<path fill="#34A853" d="M24 46c5.94 0 10.92-1.97 14.56-5.34l-7.11-5.52c-1.97 1.32-4.5 2.1-7.45 2.1-5.73 0-10.59-3.87-12.32-9.07H4.34v5.7C7.96 41.07 15.4 46 24 46z"/>' +
+    '<path fill="#FBBC05" d="M11.68 28.17A13.9 13.9 0 0 1 10.96 24c0-1.45.25-2.86.69-4.17v-5.7H4.34A23 23 0 0 0 2 24c0 3.72.9 7.24 2.48 10.4l7.2-6.23z"/>' +
+    '<path fill="#EA4335" d="M24 10.75c3.23 0 6.13 1.11 8.41 3.29l6.31-6.31C34.91 4.18 30.08 2 24 2 15.4 2 7.96 6.93 4.34 12.12l7.34 5.7c1.73-5.2 6.59-9.07 12.32-9.07z"/>' +
+    '</svg>';
+  // Внутри .coin-ic/.h-ic рисуем официальный знак, а не эмодзи.
+  const coinInner = (d) => (d && d.coin === 'google' ? GIFT_ICON : esc(d.symbol));
   const ICONS = {
     swap: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>',
     clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
@@ -297,7 +307,7 @@
                 ? `1 $ = ${Number(d.rate) || 0} USDT · выплата в USDT`
                 : `1 ${d.currency} = ${fmtRate(d.rate)}${d.network ? ' · сеть ' + d.network : ''}`;
             return `<button class="sheet-row${on ? ' on' : ''}" data-key="${esc(d.key)}" role="option" aria-selected="${on ? 'true' : 'false'}">
-              <span class="coin-ic ${esc(d.coin)}">${esc(d.symbol)}</span>
+              <span class="coin-ic ${esc(d.coin)}">${coinInner(d)}</span>
               <span class="sheet-row-text"><b>${esc(d.label)}</b><i>${esc(sub)}</i></span>
               <span class="sheet-check">${ICONS.check}</span>
             </button>`;
@@ -352,7 +362,7 @@
   function syncAssetChip() {
     const dir = currentDir();
     const ic = $('#chipIc');
-    if (ic) { ic.className = 'coin-ic ' + dir.coin; ic.textContent = dir.symbol; }
+    if (ic) { ic.className = 'coin-ic ' + dir.coin; ic.innerHTML = coinInner(dir); }
     const lb = $('#chipLabel');
     if (lb) lb.textContent = dir.label;
   }
@@ -421,7 +431,7 @@
           <div class="picker-group">
             <div class="picker-group-label">ПОДАРОЧНЫЕ КАРТЫ</div>
             <button class="group-card" data-group="gift">
-              <span class="coin-ic google group-ic">🎁</span>
+              <span class="coin-ic google group-ic">${GIFT_ICON}</span>
               <span class="group-text"><b>Подарочные карты</b><i>Google Gift Card — выплата в USDT</i></span>
               <span class="group-chev">${ICONS.right}</span>
             </button>
@@ -432,7 +442,7 @@
           <div class="form-topbar">
             <button class="back-btn" id="btnBackToAssets">${ICONS.left}<span>Выбор активов</span></button>
             <button class="asset-chip" id="assetChip" aria-label="Сменить актив">
-              <span class="coin-ic ${esc(dir.coin)}" id="chipIc">${esc(dir.symbol)}</span>
+              <span class="coin-ic ${esc(dir.coin)}" id="chipIc">${coinInner(dir)}</span>
               <span class="asset-chip-label" id="chipLabel">${esc(dir.label)}</span>
               ${ICONS.chevDown}
             </button>
@@ -445,13 +455,13 @@
             <div class="f-sep"><div class="arr">${ICONS.down}</div></div>
             <div class="f-label"><span>Вы получаете</span><span id="cryptoLimits"></span></div>
             <div id="netPick"></div>
-            <div class="f-box" style="margin-top:10px"><div class="coin-ic" id="getIc">${esc(dir.symbol)}</div><input id="inCrypto" type="number" inputmode="decimal" placeholder="0.0005" min="0" step="any"></div>
+            <div class="f-box" style="margin-top:10px"><div class="coin-ic" id="getIc">${coinInner(dir)}</div><input id="inCrypto" type="number" inputmode="decimal" placeholder="0.0005" min="0" step="any"></div>
             <div class="f-hint">Введите сумму в любом поле — второе посчитается автоматически</div>
             <div class="f-meta" id="fMeta"></div>
           </div>
           <div class="card">
             <div class="card-title">Кошелёк получателя</div>
-            <div class="f-box"><div class="coin-ic" id="walIc">${esc(dir.symbol)}</div><input id="inWallet" placeholder="${esc(dir.walletHint)}" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+            <div class="f-box"><div class="coin-ic" id="walIc">${coinInner(dir)}</div><input id="inWallet" placeholder="${esc(dir.walletHint)}" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
             <div class="f-hint" id="walHint"></div>
             <div class="f-err" id="fErr"></div>
           </div>
@@ -462,7 +472,7 @@
             <div class="card-title">Google Gift Card</div>
             <div class="f-label"><span>Номинал карты</span><span id="giftRule"></span></div>
             <div class="seg gift-nom" id="segNom"></div>
-            <div class="f-box" style="margin-top:10px"><div class="coin-ic google">🎁</div><input id="inUnits" type="number" inputmode="numeric" placeholder="10" min="${minUnits}" step="${step}" value="10"></div>
+            <div class="f-box" style="margin-top:10px"><div class="coin-ic google">${GIFT_ICON}</div><input id="inUnits" type="number" inputmode="numeric" placeholder="10" min="${minUnits}" step="${step}" value="10"></div>
             <div class="f-hint">Введите номинал карты: от $${minUnits}, кратно $${step}</div>
             <div class="f-sep"><div class="arr">${ICONS.down}</div></div>
             <div class="f-label"><span>Вы получаете</span><span id="giftLimits"></span></div>
@@ -474,10 +484,11 @@
             <div class="card-title">Где взять карту</div>
             <div class="info-note" id="giftInfo">Карту можно купить на любом маркетплейсе — Яндекс Маркет, Ozon, Wildberries и т. д. Выбирайте карту именно в <b>USD</b> (долларах): карты в рублях и других валютах не принимаются.</div>
             <div class="info-warn">⚠️ Проверьте валюту карты: нужен номинал в <b>USD ($)</b>.</div>
+            <div class="info-note" style="margin-top:10px">🛡 <b>Минимальный цифровой след</b><br>Карту можно купить за <b>наличные</b> — она не привязана к вашему банковскому счёту и паспорту. Мы не запрашиваем документы и регистрацию: только код карты и USDT-адрес. Выплата идёт прямо на ваш кошелёк — без банков, бирж и посредников. Меньше точек, где фиксируются ваши данные, — меньше цифрового следа.</div>
           </div>
           <div class="card">
             <div class="card-title">Код карты</div>
-            <div class="f-box"><div class="coin-ic google">🎁</div><input id="inGiftCode" placeholder="Например: XXXX-XXXX-XXXX-XXXX" autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+            <div class="f-box"><div class="coin-ic google">${GIFT_ICON}</div><input id="inGiftCode" placeholder="Например: XXXX-XXXX-XXXX-XXXX" autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off"></div>
             <div class="f-hint">Код видит только оператор — он проверит карту и выплатит USDT</div>
             <div class="f-err" id="giftCodeErr"></div>
           </div>
@@ -588,9 +599,9 @@
     const cl = $('#cryptoLimits');
     if (cl) cl.textContent = `≈ ${fmtTrim(s.minRub / rate, dec)}–${fmtTrim(s.maxRub / rate, dec)} ${dir.currency}`;
     const ic = $('#getIc');
-    if (ic) { ic.className = 'coin-ic ' + dir.coin; ic.textContent = dir.symbol; }
+    if (ic) { ic.className = 'coin-ic ' + dir.coin; ic.innerHTML = coinInner(dir); }
     const wi = $('#walIc');
-    if (wi) { wi.className = 'coin-ic ' + dir.coin; wi.textContent = dir.symbol; }
+    if (wi) { wi.className = 'coin-ic ' + dir.coin; wi.innerHTML = coinInner(dir); }
     const w = $('#inWallet');
     if (w) w.placeholder = dir.walletHint;
     const np = $('#netPick');
@@ -784,7 +795,7 @@
       box.innerHTML = `
         <div class="card stage">
           ${chip('details')}
-          <div class="pay-dir">${ICONS.swap}<span>🎁 Google Gift Card <b>$${giftNominal(o)}</b> → ${payout}</span></div>
+          <div class="pay-dir">${ICONS.swap}<span>Google Gift Card <b>$${giftNominal(o)}</b> → ${payout}</span></div>
           <div class="stage-title">Подтвердите передачу карты</div>
           <div class="stage-sub">Заявка <b>#${o.id}</b>. Проверьте код — он уйдёт оператору, как только вы нажмёте «Я оплатил».</div>
           <div class="req-box" id="giftCodeBox">Код карты: ${esc(o.giftCode || '—')}</div>
@@ -1075,10 +1086,10 @@
         .map(
           (o) => `
         <div class="card h-item" data-order="${o.id}" role="button" tabindex="0">
-          <div class="h-ic ${esc(dirOfOrder(o).coin)}">${esc(dirOfOrder(o).symbol)}${o.network ? `<small>${esc(o.network === 'TRC20' ? 'TRC' : 'ERC')}</small>` : ''}</div>
+          <div class="h-ic ${esc(dirOfOrder(o).coin)}">${coinInner(dirOfOrder(o))}${o.network ? `<small>${esc(o.network === 'TRC20' ? 'TRC' : 'ERC')}</small>` : ''}</div>
           <div class="h-main">
             ${isGiftOrder(o)
-              ? `<div class="h-top"><span>🎁 $${giftNominal(o)} карта → USDT</span><span>${fmtCrypto(o.crypto, 'USDT', 2)}</span></div>`
+              ? `<div class="h-top"><span>$${giftNominal(o)} карта → USDT</span><span>${fmtCrypto(o.crypto, 'USDT', 2)}</span></div>`
               : `<div class="h-top"><span>₽ → ${esc(dirLabel(o))}</span><span>${fmtRub(o.payRub || o.rub)}</span></div>`}
             <div class="h-sub"><span>#${o.id}${o.receipt ? ' 🧾' : ''}${o.txUrl ? ' 🔗' : ''} · ${fmtDate(o.createdAt)}</span>${chip(o.status)}</div>
             <div class="h-sub" style="margin-top:2px"><span>${esc(o.wallet.slice(0, 10) + '…' + o.wallet.slice(-6))}</span><b style="color:#9fd8ff">${fmtCrypto(o.crypto, o.currency, currenciesDecimals(o))}</b></div>

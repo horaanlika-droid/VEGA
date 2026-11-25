@@ -7,6 +7,8 @@ const rates = require('./rates');
 const receipts = require('./receipts');
 const currencies = require('./currencies');
 const { esc, fmtRub, fmtCrypto, fmtDate, fmtSize, parseNum } = require('./util');
+const clientbot = require('./clientbot');
+const widget = require('./widget');
 
 let bot = null;
 const flows = new Map(); // adminId -> { type, orderId?, userId? }
@@ -183,7 +185,7 @@ async function sendReceiptToAdmins(o) {
 async function notifyClient(o) {
   try {
     await bot.api.sendMessage(o.userId,
-      `💳 <b>Реквизиты по заявке #${o.id}</b>\n\n${esc(o.requisites)}\n\nК оплате: <b>${fmtRub(o.payRub)}</b>\nПосле перевода нажмите «Я оплатил» в приложении.`,
+      `💳 <b>Реквизиты по заявке #${o.id}</b>\n\n${esc(o.requisites)}\n\nК оплате: <b>${fmtRub(o.payRub)}</b>\nПосле перевода нажмите «Я оплатил»: в этом чате (/menu → 📦 Мои заявки) или в приложении.`,
       { parse_mode: 'HTML' });
     return true;
   } catch (e) {
@@ -391,7 +393,7 @@ function settingsKb(s) {
     .text('✍️ Курс ₮ TRC20', 's:rate_trc20')
     .text('✍️ Курс ₮ ERC20', 's:rate_erc20')
     .row()
-    .text(`🎁 Gift −${s.giftPercent ?? 0}%`, 's:fee_gift')
+    .text(`🎁 Gift комиссия ${s.giftPercent ?? 0}%`, 's:fee_gift')
     .text(`${on('GOOGLE_USD')} Google Gift`, 's:dir_GOOGLE_USD')
     .row()
     .text('✍️ Курс Gift', 's:rate_gift')
@@ -427,7 +429,7 @@ function settingsText(s) {
     `<b>${s[usdt.feeKey] ?? 0}%</b> USDT TRC20 · <b>${s[errc.feeKey] ?? 0}%</b> USDT ERC20\n` +
     `💵 Курс для клиентов: <b>${rateLine(s)}</b>\n` +
     `🎁 Google Gift: <b>${s.rateGOOGLEUSD ?? '—'} USDT за $1</b> номинала ` +
-    `(скидка ${s.giftPercent ?? 0}% · карта $10 = ${((s.rateGOOGLEUSD ?? 0) * 10).toFixed(2)} USDT)\n` +
+    `(комиссия ${s.giftPercent ?? 0}% · карта $10 = ${((s.rateGOOGLEUSD ?? 0) * 10).toFixed(2)} USDT)\n` +
     `🕹 Направления: ${currencies.list().map((p) => `${p.label} ${currencies.isEnabled(s, p.key) ? '✅' : '⛔'}`).join(' · ')}\n` +
     `Лимиты: ${fmtRub(s.minRub)} — ${fmtRub(s.maxRub)}\n` +
     `🎁 Реферальный процент: <b>${s.refPercent}%</b>\n` +
@@ -480,15 +482,15 @@ const SET_FIELDS = {
   // Ручной курс USDT за 1 USDT в рублях — если автообновление недоступно.
   rate_trc20: { label: 'курс USDT TRC20 в ₽ за 1 USDT (например 100.5)', num: true, key: 'rateUSDTTRC20' },
   rate_erc20: { label: 'курс USDT ERC20 в ₽ за 1 USDT (например 101.5)', num: true, key: 'rateUSDTERC20' },
-  // Гифт-карты: клиент отдаёт карту, мы платим USDT, поэтому процент — скидка к курсу USD.
-  // Гифт-карты: скидка от номинала. 15% → платим 0.85 USDT за $1, карта $10 = 8.5 USDT.
+  // Гифт-карты: клиент отдаёт карту, мы платим USDT; процент — комиссия обменника с номинала.
+  // По умолчанию комиссия 0 → $1 = 1 USDT; 15% → платим 0.85 USDT за $1, карта $10 = 8.5 USDT.
   fee_gift: {
-    label: 'скидку на Google Gift Card в % от номинала (0–50, например 15 → карта $10 = 8.5 USDT)',
+    label: 'комиссию по Google Gift Card в % от номинала (0–50; 0 → $1 = 1 USDT; 15 → карта $10 = 8.5 USDT)',
     num: true,
     key: 'giftPercent',
     discount: true,
   },
-  rate_gift: { label: 'курс Google Gift Card в USDT за $1 номинала (например 0.85)', num: true, key: 'rateGOOGLEUSD' },
+  rate_gift: { label: 'курс Google Gift Card в USDT за $1 номинала (например 1 — по номиналу, 0.85 — с комиссией 15%)', num: true, key: 'rateGOOGLEUSD' },
   min: { label: 'минимальную сумму обмена (₽)', num: true, key: 'minRub' },
   max: { label: 'максимальную сумму обмена (₽)', num: true, key: 'maxRub' },
   ref: { label: 'реферальный процент (например 1)', num: true, key: 'refPercent' },
@@ -599,7 +601,7 @@ async function handleAdminText(ctx) {
         if (f.type.startsWith('set:fee')) {
           if (!isFinite(n) || n < 0 || n > 50) {
             return ctx.reply(field.discount
-              ? 'Скидка на гифт-карты — число от 0 до 50 %. Пример: 15 (карта $10 = 8.5 USDT)'
+              ? 'Комиссия на гифт-карты — число от 0 до 50 %. 0 — по номиналу ($1 = 1 USDT). Пример: 15 (карта $10 = 8.5 USDT)'
               : 'Комиссия — число от 0 до 50. Пример: 2');
           }
         } else if (!isFinite(n) || n <= 0) {
@@ -646,6 +648,13 @@ async function adminsMenu(ctx) {
 /* ---------- регистрация обработчиков ---------- */
 
 function register() {
+  // Виджеты (Bot API 10.4): grammy не знает тип обновления widget_query — разбираем middleware сами.
+  // Прямые отсюда только к Telegram API; клиентская часть — в clientbot.js.
+  bot.use(async (ctx, next) => {
+    const wq = ctx.update && ctx.update.widget_query;
+    if (wq) return widget.handleWidgetQuery(ctx, wq, clientbot);
+    return next();
+  });
   bot.command('admins', (ctx) => {
     if (!isAdmin(ctx)) return;
     flows.delete(ctx.from.id);
@@ -676,28 +685,29 @@ function register() {
   }
   bot.command('start', async (ctx) => {
     if (!isAdmin(ctx)) {
-      const url = store.get().settings.publicUrl;
-      if (url) {
-        return ctx.reply('🌌 VEGA — обмен BTC, LTC и USDT (TRC20/ERC20)', {
-          reply_markup: new InlineKeyboard().webApp('Открыть обменник', url),
-        });
-      }
-      return ctx.reply('🌌 VEGA — обменник скоро будет доступен. Откройте сайт по ссылке из панели оператора.');
+      if (ctx.chat?.type !== 'private') return;
+      // Клиентский флоу прямо в чате (для тех, кто не хочет открывать приложение).
+      return clientbot.clientStart(ctx, (ctx.match || '').toString().trim());
     }
     flows.delete(ctx.from.id);
     await mainMenu(ctx, false);
   });
   bot.command('menu', async (ctx) => {
-    if (!isAdmin(ctx)) return;
+    if (!isAdmin(ctx)) {
+      if (ctx.chat?.type !== 'private') return;
+      return clientbot.clientStart(ctx);
+    }
     flows.delete(ctx.from.id);
     await mainMenu(ctx, false);
   });
 
   bot.on('callback_query:data', async (ctx) => {
-    if (!isAdmin(ctx)) return ctx.answerCallbackQuery({ text: '⛔️' });
-    const d = ctx.callbackQuery.data;
+    const d = ctx.callbackQuery.data || '';
+    if (!isAdmin(ctx)) {
+      if (d.startsWith('c:') && ctx.chat?.type === 'private') return clientbot.handleClientCallback(ctx, d);
+      return ctx.answerCallbackQuery({ text: '⛔️' }).catch(() => {});
+    }
     await ctx.answerCallbackQuery().catch(() => {});
-    if (!isAdmin(ctx)) return;
     flows.delete(ctx.from.id);
 
     if (d === 'm:home') return mainMenu(ctx, true);
@@ -816,8 +826,18 @@ function register() {
   });
 
   bot.on('message:text', async (ctx) => {
-    if (!isAdmin(ctx)) return;
+    if (!isAdmin(ctx)) {
+      if (ctx.chat?.type !== 'private') return;
+      return clientbot.handleClientText(ctx);
+    }
     await handleAdminText(ctx);
+  });
+
+  bot.on('message:document', async (ctx) => {
+    if (!isAdmin(ctx)) {
+      if (ctx.chat?.type !== 'private') return;
+      return clientbot.handleClientDocument(ctx, bot);
+    }
   });
 }
 

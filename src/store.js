@@ -19,9 +19,9 @@ const defaults = () => ({
     feePercentUSDTERC20: 5, // комиссия по USDT ERC20 (дорогие комиссии сети)
     rateUSDTTRC20: 100, // стартовые итоговые курсы для USDT (₽ за 1 USDT)
     rateUSDTERC20: 101,
-    // Google Gift Card: скидка от номинала и фиксированный курс USDT за $1 номинала.
-    giftPercent: 15, // скидка 15% → $10 карта даёт 8.5 USDT
-    rateGOOGLEUSD: 0.85, // курс: 0.85 USDT за $1 номинала = (100 − giftPercent) / 100
+    // Google Gift Card: $1 номинала = 1 USDT по умолчанию (1:1), оператор назначает комиссию.
+    giftPercent: 0, // комиссия обменника по картам, % от номинала (0–50). 0 → $1 = 1 USDT
+    rateGOOGLEUSD: 1, // курс: USDT за $1 номинала = (100 − giftPercent) / 100
     enabled: { BTC: true, LTC: true, USDT_TRC20: true, USDT_ERC20: true, GOOGLE_USD: true },
     rateUpdatedAt: null,
     rateSource: 'manual',
@@ -64,6 +64,12 @@ function load() {
         }
       }
       if (!Number.isFinite(db.supportSeq)) db.supportSeq = (db.support?.length || 0) + 1;
+      // Модель «по умолчанию $1 = 1 USDT, админ назначает комиссию» заменила старые дефолты
+      // (скидка 15% → 0.85). Переводим только нетронутые значения; если оператор задавал свои — не трогаем.
+      if (db.settings.giftPercent === 15 && Number(db.settings.rateGOOGLEUSD) === 0.85) {
+        db.settings.giftPercent = 0;
+        db.settings.rateGOOGLEUSD = 1;
+      }
       for (const o of db.orders || []) {
         if (o.txUrl === undefined) o.txUrl = null;
         if (o.txHash === undefined) o.txHash = null;

@@ -40,19 +40,6 @@ const clientUser = (u) => ({
   referredCount: u.referredCount || 0,
 });
 
-// Сколько USDT получит клиент, отдавший карту на units долларов.
-// Курс карты — доля номинала в USDT (при 15%: $10 → 8.5 USDT), от сети не зависит.
-function giftPayout(settings, units, network) {
-  const cardRate = currencies.rateOf(settings, 'GOOGLE_USD', null);
-  if (!(cardRate > 0)) return null;
-  if (!currencies.isEnabled(settings, network === 'ERC20' ? 'USDT_ERC20' : 'USDT_TRC20')) return null;
-  const dec = currencies.payoutDecimals('GOOGLE_USD');
-  const mul = 10 ** dec;
-  const crypto = Math.floor((Number(units) || 0) * cardRate * mul + 1e-6) / mul;
-  const usdtRate = currencies.rateOf(settings, 'USDT', network);
-  return { crypto, rate: cardRate, cardRate, usdtRate };
-}
-
 function startWeb() {
   const app = express();
   app.disable('x-powered-by');
@@ -166,7 +153,7 @@ function startWeb() {
       if (!giftNetwork) {
         return res.status(400).json({ error: pair.walletError });
       }
-      const payout = giftPayout(s, units, giftNetwork);
+      const payout = currencies.giftPayout(s, units, giftNetwork);
       if (!payout) {
         return res.status(400).json({ error: `Выплата USDT в сети ${giftNetwork} недоступна — выберите другой адрес.` });
       }
