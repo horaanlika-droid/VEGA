@@ -6,6 +6,7 @@ const bus = require('./bus');
 const receipts = require('./receipts');
 const currencies = require('./currencies');
 const { validateInitData, parseUser } = require('./validate');
+const admins = require('./admins');
 
 const clientOrder = (o) => ({
   id: o.id,
@@ -32,12 +33,15 @@ const clientOrder = (o) => ({
   updatedAt: o.updatedAt,
 });
 
+// isAdmin нужен приложению, чтобы показать «Админку» (правка ссылки на чат).
+// В демо-режиме (BOT_TOKEN не задан) админка открыта всем — как и демо-пульт оператора.
 const clientUser = (u) => ({
   id: u.id,
   name: u.name,
   username: u.username,
   referrer: u.referrer,
   referredCount: u.referredCount || 0,
+  isAdmin: !config.botToken || admins.has(String(u.id)),
 });
 
 function startWeb() {
@@ -117,6 +121,21 @@ function startWeb() {
 
   app.get('/api/settings', (req, res) => res.json(store.publicSettings()));
 
+  // Админка: смена ссылки на чат — сразу видна всем на сайте и в приложении.
+  app.post('/api/admin/settings/chat', (req, res) => {
+    const a = needAuth(req, res);
+    if (!a) return;
+    if (config.botToken && !admins.has(String(a.user.id))) {
+      return res.status(403).json({ error: 'Только для оператора VEGA' });
+    }
+    const chat = String(req.body?.chat || '').trim().slice(0, 300);
+    if (chat.length < 8 || !/^(https:\/\/|@[A-Za-z0-9_]{5,32}$)/.test(chat)) {
+      return res.status(400).json({ error: 'Укажите ссылку t.me/… или юзернейм @… (например https://t.me/+abc или @vega_support)' });
+    }
+    store.mutate((db) => { db.settings.chat = chat; });
+    res.json({ settings: store.publicSettings() });
+  });
+
   app.get('/api/me', (req, res) => {
     const a = needAuth(req, res);
     if (!a) return;
@@ -144,9 +163,17 @@ function startWeb() {
       const units = Number(req.body.units ?? req.body.cryptoAmount);
       const unitsError = currencies.validateUnits(pair.currency, pair.network, units);
       if (unitsError) return res.status(400).json({ error: unitsError });
-      const giftCode = String(req.body.giftCode || '').trim();
-      if (giftCode.length < 8 || giftCode.length > 200 || /\s{2,}/.test(giftCode)) {
-        return res.status(400).json({ error: 'Введите код подарочной карты (8–200 символов).' });
+      // Важно: код карты НЕ собираем при создании заявки. Клиент присылает его только
+      // после того, как оператор подключится (кнопка «🤝 Подключить» в боте оператора) —
+      // ничего не отправляется без команды оператора. Старый клиент может прислать код
+      // сразу: поддерживаем для совместимости.
+      const giftCodeRaw = String(req.body.giftCode || '').trim();
+      let giftCode = null;
+      if (giftCodeRaw) {
+        if (giftCodeRaw.length < 8 || giftCodeRaw.length > 200 || /\s{2,}/.test(giftCodeRaw)) {
+          return res.status(400).json({ error: 'Код подарочной карты: 8–200 символов, без двойных пробелов.' });
+        }
+        giftCode = giftCodeRaw;
       }
       // Сеть выплаты определяем по адресу: T… → TRC20, 0x… → ERC20.
       const giftNetwork = currencies.networkByWallet(wallet);
@@ -284,8 +311,21 @@ function startWeb() {
     const found = store.getOrder(req.params.id);
     if (!found || found.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
     const o = store.expireIfNeeded(found);
-    // Гифт-карта: клиент прислал код и подтверждает готовность сделки — начинается проверка.
+    // Гифт-карта: «Я оплатил» = клиент подтверждает сделку. Заявка БЕЗ кода (новая двухфазная
+    // схема) так не подтверждается — сначала оператор подключается, потом клиент присылает код.
     if (o.direction === 'sell' && o.status === 'new') {
+      if (!o.giftCode) {
+        return res.status(400).json({ error: 'Дождитесь подключения оператора — код карты отправляется только после его команды.' });
+      }
+      const upd = store.updateOrder(o.id, { status: 'paid', paidAt: Date.now() });
+      bus.emit('order_event', { order: upd, type: 'paid' });
+      return res.json({ order: clientOrder(upd) });
+    }
+    if (o.status === 'details' && o.direction === 'sell') {
+      // Гифт-карта в статусе «оператор подключился»: код ещё не прислан.
+      if (!o.giftCode) {
+        return res.status(400).json({ error: 'Сначала отправьте код карты — оператор на связи.' });
+      }
       const upd = store.updateOrder(o.id, { status: 'paid', paidAt: Date.now() });
       bus.emit('order_event', { order: upd, type: 'paid' });
       return res.json({ order: clientOrder(upd) });
@@ -299,6 +339,35 @@ function startWeb() {
       return res.json({ order: clientOrder(upd) });
     }
     res.json({ order: clientOrder(o) });
+  });
+
+  // Код карты: клиент присылает его ТОЛЬКО после подключения оператора.
+  // Прислан код → заявка переходит в «paid» (код на проверку) — оператор получает broadcast.
+  app.post('/api/order/:id/code', (req, res) => {
+    const a = needAuth(req, res);
+    if (!a) return;
+    const found = store.getOrder(req.params.id);
+    if (!found || found.userId !== String(a.user.id)) return res.status(404).json({ error: 'not found' });
+    const o = store.expireIfNeeded(found);
+    if (o.direction !== 'sell') return res.status(400).json({ error: 'Код присылается только по заявке на гифт-карту.' });
+    if (['completed', 'rejected', 'cancelled'].includes(o.status)) {
+      return res.status(400).json({ error: 'По этой заявке код уже не принимается.' });
+    }
+    if (o.status === 'paid') return res.json({ order: clientOrder(o) }); // идемпотентно
+    if (!['details', 'new'].includes(o.status)) {
+      return res.status(400).json({ error: 'Код сейчас не принимается — дождитесь оператора.' });
+    }
+    // Новая двухфазная заявка (ещё без кода) принимает код только в статусе «details» (оператор подключился).
+    if (!o.giftCode && o.status !== 'details') {
+      return res.status(400).json({ error: 'Дождитесь подключения оператора — код карты отправляется только после его команды.' });
+    }
+    const giftCode = String(req.body.giftCode || '').trim();
+    if (giftCode.length < 8 || giftCode.length > 200 || /\s{2,}/.test(giftCode)) {
+      return res.status(400).json({ error: 'Код подарочной карты: 8–200 символов, без двойных пробелов.' });
+    }
+    const upd = store.updateOrder(o.id, { giftCode, status: 'paid', paidAt: Date.now() });
+    bus.emit('order_event', { order: upd, type: 'paid' });
+    return res.json({ order: clientOrder(upd) });
   });
 
   app.post('/api/order/:id/cancel', (req, res) => {
@@ -344,8 +413,18 @@ function startWeb() {
     res.json({ ok: true });
   });
 
-  // ДЕМО-пульт оператора: существует ТОЛЬКО когда BOT_TOKEN не задан (превью без бота).
+    // ДЕМО-пульт оператора: существует ТОЛЬКО когда BOT_TOKEN не задан (превью без бота).
   if (!config.botToken) {
+    // Демо: оператор подключается к гифт-заявке — клиент получает возможность отправить код.
+    app.post('/api/admin/order/:id/connect', (req, res) => {
+      const o = store.getOrder(req.params.id);
+      if (!o) return res.status(404).json({ error: 'not found' });
+      if (o.direction !== 'sell') return res.status(400).json({ error: 'connect — только для гифт-заявок' });
+      if (o.status !== 'new') return res.status(400).json({ error: 'Заявка уже в работе' });
+      const upd = store.updateOrder(o.id, { status: 'details' });
+      bus.emit('order_event', { order: upd, type: 'details' });
+      res.json({ order: clientOrder(upd) });
+    });
     app.post('/api/admin/order/:id/req', (req, res) => {
       const o = store.getOrder(req.params.id);
       if (!o) return res.status(404).json({ error: 'not found' });

@@ -19,7 +19,7 @@ const STATUS_LABEL = {
   new: '🔍 Идёт подбор реквизитов',
   details: '💳 Ожидает оплаты клиентом',
   paid: '⏳ Клиент оплатил — нужно подтверждение',
-  giftNew: '🕐 Ожидает код карты и «Я оплатил»',
+  giftNew: '🕐 Ожидает подключения оператора (кнопка «🤝»)',
   completed: '🟢 Завершена',
   rejected: '🔴 Отклонена',
   cancelled: '⚪ Отменена клиентом',
@@ -67,9 +67,11 @@ function orderText(o) {
       isGift(o)
         ? o.status === 'new'
           ? STATUS_LABEL.giftNew
-          : o.status === 'paid'
-            ? '🔎 Карта на проверке — подтвердите и выплатите USDT'
-            : STATUS_LABEL[o.status] || o.status
+          : o.status === 'details'
+            ? '🤝 Оператор подключён — ждём код карты от клиента'
+            : o.status === 'paid'
+              ? '🔎 Карта на проверке — подтвердите и выплатите USDT'
+              : STATUS_LABEL[o.status] || o.status
         : STATUS_LABEL[o.status] || o.status
     }` +
     (o.expiresAt && !['completed', 'rejected', 'cancelled'].includes(o.status)
@@ -81,7 +83,11 @@ function orderText(o) {
 function orderKb(o) {
   const kb = new InlineKeyboard();
   if (o.status === 'new' && isGift(o)) {
-    // Клиент ещё не подтвердил сделку: ждём «Я оплатил».
+    // Двухфазная сделка: клиент ждёт оператора и ничего не отправляет без его команды.
+    kb.text('🤝 Подключить — запросить код', `o:${o.id}:connect`).row();
+    kb.text('🔄 Обновить', `o:${o.id}`).text('❌ Отклонить', `o:${o.id}:reject`);
+  } else if (o.status === 'details' && isGift(o)) {
+    // Оператор подключился — ждём код карты от клиента.
     kb.text('🔄 Обновить', `o:${o.id}`).text('❌ Отклонить', `o:${o.id}:reject`);
   } else if (o.status === 'paid' && isGift(o)) {
     // Код прислан и клиент нажал «Я оплатил» → проверяем карту и выплачиваем USDT.
@@ -190,6 +196,21 @@ async function notifyClient(o) {
     return true;
   } catch (e) {
     console.error(`[bot] requisites #${o.id} → client:`, e.message);
+    return false;
+  }
+}
+
+async function notifyClientConnected(o) {
+  try {
+    await bot.api.sendMessage(o.userId,
+      `🤝 <b>Оператор на связи по заявке #${o.id}</b>\n\n` +
+      `Теперь можно отправить код карты Google Gift Card (номиналом $${giftUnits(o)}) — в приложении или здесь, ответив на это сообщение /menu → 📦 Мои заявки.\n` +
+      `После отправки кода оператор проверит карту и выплатит <b>${payoutText(o)}</b> на кошелёк <code>${esc(o.wallet)}</code>.\n\n` +
+      `Не сообщайте код карты никому, кроме оператора VEGA.`,
+      { parse_mode: 'HTML' });
+    return true;
+  } catch (e) {
+    console.error(`[bot] connect → client ${o.id}:`, e.message);
     return false;
   }
 }
@@ -789,9 +810,13 @@ function register() {
         }
         return txPrompt(ctx, o);
       }
-      const allowed = { req: ['new'], quote: ['new'], amt: ['details'], reject: ['new', 'details'], unpaid: ['paid'], confirm: ['details', 'paid'] };
-      // Гифт-карту подтверждают после «Я оплатил»: реквизиты клиенту не нужны.
-      if (isGift(o) && act === 'confirm' && o.status === 'paid') allowed.confirm = ['new', 'details', 'paid'];
+      const allowed = { req: ['new'], quote: ['new'], amt: ['details'], reject: ['new', 'details'], unpaid: ['paid'], confirm: ['details', 'paid'], connect: ['new'] };
+      // Гифт-карту подтверждают только из «paid» — то есть когда клиент уже отправил код
+      // (в новой двухфазной схеме код переводит заявку new/details → paid).
+      if (isGift(o)) allowed.confirm = ['paid'];
+      if (act === 'connect' && !isGift(o)) {
+        return ctx.reply('Подключить оператора можно только к гифт-заявке.', { reply_markup: homeKb() });
+      }
       if (!allowed[act]?.includes(o.status)) {
         return ctx.reply('Действие недоступно: статус заявки уже изменился. Откройте заявку заново.', { reply_markup: homeKb() });
       }
@@ -799,6 +824,12 @@ function register() {
       if (act === 'quote' || act === 'amt') {
         flows.set(ctx.from.id, { type: act, orderId: id, version: o.version || 0 });
         return ctx.reply(`✏️ Заявка #${id}. Отправьте точную сумму к оплате в ₽ (сейчас ${fmtRub(o.payRub || o.rub)}).\n/cancel — отмена`);
+      }
+      if (act === 'connect') {
+        const upd = store.updateOrder(id, { status: 'details' });
+        await sendOrUpdateOrderAdmin(upd);
+        await notifyClientConnected(upd);
+        return;
       }
       if (act === 'reject') {
         const upd = store.updateOrder(id, { status: 'rejected' });

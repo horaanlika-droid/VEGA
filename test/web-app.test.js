@@ -202,7 +202,7 @@ const usdtSettings = {
 };
 
 // Приложение с настройками, где есть USDT.
-async function usdtApp(t, order = initial) {
+async function usdtApp(t, order = initial, me = { id: 999 }) {
   const dom = new JSDOM(html, { url: 'https://vega.example', runScripts: 'outside-only', pretendToBeVisual: true });
   t.after(() => dom.window.close());
   const { window } = dom;
@@ -217,8 +217,8 @@ async function usdtApp(t, order = initial) {
     calls.push({ pathname, ...options });
     const custom = handler(pathname, options);
     if (custom) return custom;
-    if (pathname === '/api/init') return json({ settings: usdtSettings, me: { id: 999 }, demo: false });
-    if (pathname === '/api/me') return json({ orders: [order], me: { id: 999 } });
+    if (pathname === '/api/init') return json({ settings: usdtSettings, me, demo: false });
+    if (pathname === '/api/me') return json({ orders: [order], me });
     if (pathname === '/api/settings') return json(usdtSettings);
     if (pathname === '/api/order/1') return json({ order });
     if (pathname === '/api/orders') return json({ order: { ...initial, id: 2, currency: 'USDT', network: 'TRC20' } });
@@ -406,52 +406,95 @@ test('gift nominal rounds to $10 and price is 1:1 by default: $10 → 10 USDT in
   assert.match(a.document.querySelector('#giftMeta').textContent, /1 \$ = 1 USDT/);
 });
 
-test('selling a card sends units, code and wallet to the API', async (t) => {
+test('selling a card opens the rules dialog first; the order is created without a code and waits for the operator', async (t) => {
   const a = await usdtApp(t);
   await pickAssetUi(a, 'GOOGLE_USD');
   a.document.querySelector('#inUnits').value = '20';
-  a.document.querySelector('#inGiftCode').value = 'ABCD-EFGH-IJKL-MNOP';
   a.document.querySelector('#inUsdtWallet').value = 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ';
   a.handle((url, options) => {
     if (url === '/api/orders') {
-      return a.json({ order: { ...initial, id: 5, direction: 'sell', currency: 'GOOGLE_USD', units: 20, network: 'TRC20', giftCode: 'ABCD-EFGH-IJKL-MNOP', crypto: 17.42, status: 'new' } });
+      return a.json({ order: { ...initial, id: 5, direction: 'sell', currency: 'GOOGLE_USD', units: 20, network: 'TRC20', giftCode: null, crypto: 20, status: 'new', expiresAt: Date.now() + 3600e3 } });
     }
     return null;
   });
   a.document.querySelector('#btnSell').click();
   await tick();
+  // Сначала открывается диалог с правилами перевода — заявка ещё не создаётся.
+  const rules = a.document.querySelector('#giftRules');
+  assert.ok(!rules.classList.contains('hidden'), 'диалог с правилами открыт');
+  assert.match(rules.textContent, /Правила передачи карты/);
+  assert.match(rules.textContent, /Ничего не отправляйте/);
+  assert.match(rules.textContent, /подключения оператора/i);
+  assert.ok(!a.calls.some((c) => c.pathname === '/api/orders'), 'до согласия заявка не создаётся');
+  // Подтверждаем правила — заявка создаётся без кода.
+  a.document.querySelector('#giftRulesConfirm').click();
+  await tick();
   const post = a.calls.find((c) => c.pathname === '/api/orders');
-  assert.ok(post, 'запрос на создание заявки ушёл');
+  assert.ok(post, 'запрос на создание заявки ушёл после согласия с правилами');
   const body = JSON.parse(post.body);
   assert.equal(body.currency, 'GOOGLE_USD');
   assert.equal(body.units, 20);
-  assert.equal(body.giftCode, 'ABCD-EFGH-IJKL-MNOP');
+  assert.equal(body.giftCode, undefined, 'код при создании заявки не отправляется');
   assert.equal(body.wallet, 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ');
-  // После отправки кода клиент видит кнопку «Я оплатил», а не «проверяем карту».
-  assert.match(a.document.querySelector('#exOrder').textContent, /Подтвердите передачу карты/);
-  assert.ok(a.document.querySelector('#btnGiftPaid'), 'кнопка «Я оплатил»');
-  assert.match(a.document.querySelector('#exOrder').textContent, /После «Я оплатил» оператор проверит карту/);
+  // Клиент ждёт оператора: ни «Я оплатил», ни поля для кода.
+  assert.match(a.document.querySelector('#exOrder').textContent, /Ожидаем подключения оператора/);
+  assert.match(a.document.querySelector('#exOrder').textContent, /Ничего не отправляйте/);
+  assert.equal(a.document.querySelector('#btnGiftPaid'), null);
+  assert.equal(a.document.querySelector('#inGiftSendCode'), null, 'поле кода не показывается до подключения оператора');
 });
 
-test('gift form rejects a missing code, a bad wallet and a nominal below $10', async (t) => {
+test('gift form validates nominal and wallet; rules dialog opens only when valid', async (t) => {
   const a = await usdtApp(t);
   await pickAssetUi(a, 'GOOGLE_USD');
+  const rules = a.document.querySelector('#giftRules');
   const units = a.document.querySelector('#inUnits');
   units.value = '5';
   units.dispatchEvent(new a.window.Event('input', { bubbles: true }));
   a.document.querySelector('#btnSell').click();
   await tick();
   assert.match(a.document.querySelector('#giftErr').textContent, /\$10/);
+  assert.ok(rules.classList.contains('hidden'), 'диалог не открылся при номинале ниже $10');
   units.value = '20';
-  a.document.querySelector('#btnSell').click();
-  await tick();
-  assert.match(a.document.querySelector('#giftCodeErr').textContent, /код/i);
-  a.document.querySelector('#inGiftCode').value = 'GOOD-CODE-1234';
+  units.dispatchEvent(new a.window.Event('input', { bubbles: true }));
   a.document.querySelector('#inUsdtWallet').value = 'bc1' + 'a'.repeat(30);
   a.document.querySelector('#btnSell').click();
   await tick();
   assert.match(a.document.querySelector('#giftErr').textContent, /USDT/);
+  assert.ok(rules.classList.contains('hidden'), 'диалог не открылся при невалидном адресе');
   assert.ok(!a.calls.some((c) => c.pathname === '/api/orders'));
+  // Отмена в диалоге закрывает его и не создаёт заявку.
+  a.document.querySelector('#inUsdtWallet').value = 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ';
+  a.document.querySelector('#btnSell').click();
+  await tick();
+  assert.ok(!rules.classList.contains('hidden'), 'диалог открылся при валидной форме');
+  a.document.querySelector('#giftRulesCancel').click();
+  await tick();
+  assert.ok(!rules.classList.contains('open'), 'диалог закрыт по отмене');
+  assert.ok(!a.calls.some((c) => c.pathname === '/api/orders'));
+});
+
+test('operator connects → client sends the code from the stage screen → card is under review', async (t) => {
+  const giftDetails = {
+    ...initial, id: 8, direction: 'sell', currency: 'GOOGLE_USD', units: 20, network: 'TRC20',
+    wallet: 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ', giftCode: null, crypto: 20, status: 'details',
+    expiresAt: Date.now() + 3600e3,
+  };
+  const a = await usdtApp(t, giftDetails);
+  // Оператор на связи: поле отправки кода показано, «Я оплатил» нет.
+  assert.match(a.document.querySelector('#exOrder').textContent, /Оператор на связи/);
+  assert.ok(a.document.querySelector('#inGiftSendCode'), 'поле кода открыто после подключения оператора');
+  assert.equal(a.document.querySelector('#btnGiftPaid'), null);
+  a.handle((url) => {
+    if (url === '/api/order/8/code') return a.json({ order: { ...giftDetails, giftCode: 'SEND-CODE-4242', status: 'paid', paidAt: Date.now() } });
+    return null;
+  });
+  a.document.querySelector('#inGiftSendCode').value = 'SEND-CODE-4242';
+  a.document.querySelector('#btnGiftSend').click();
+  await tick();
+  const post = a.calls.find((c) => c.pathname === '/api/order/8/code');
+  assert.ok(post, 'код ушёл на /api/order/:id/code');
+  assert.equal(JSON.parse(post.body).giftCode, 'SEND-CODE-4242');
+  assert.match(a.document.querySelector('#exOrder').textContent, /Карта на проверке/);
 });
 
 test('completed gift order in history shows nominal and USDT payout', async (t) => {
@@ -518,4 +561,51 @@ test('expired gift order shows the deadline reason instead of a generic cancel',
   await tick();
   assert.match(a.document.querySelector('#exOrder').textContent, /Срок на сделку истёк/);
   assert.match(a.document.querySelector('#exOrder').textContent, /1 час/);
+});
+
+test('ЛК клиента: вкладка «ЛК» вместо «Инфо» — профиль, статистика и связь', async (t) => {
+  const doneOrder = {
+    ...initial, id: 3, status: 'completed', currency: 'BTC', rub: 12000, payRub: 12000,
+  };
+  const a = await usdtApp(t, doneOrder);
+  const navButtons = [...a.document.querySelectorAll('#nav button')].map((b) => b.dataset.tab);
+  assert.deepEqual(navButtons, ['exchange', 'history', 'refs', 'support', 'profile']);
+  assert.ok(!navButtons.includes('info'), 'вкладки «Инфо» больше нет');
+  a.document.querySelector('[data-tab="profile"]').click();
+  await tick();
+  const view = a.document.querySelector('#view-profile');
+  assert.ok(!view.classList.contains('hidden'), 'ЛК открыт по клику в меню');
+  assert.match(view.textContent, /ID 999/);
+  assert.match(view.textContent, /заявок всего/);
+  assert.match(view.textContent, /завершено/);
+  assert.match(view.textContent, /Реферальная программа/);
+  assert.match(view.textContent, /Связь с нами/);
+  assert.equal(a.document.querySelector('#lcChatLink'), null, 'обычный клиент не видит админку');
+  // Кнопка «Открыть чат поддержки» переводит на вкладку Чат.
+  a.document.querySelector('#goSupport').click();
+  await tick();
+  assert.ok(!a.document.querySelector('#view-support').classList.contains('hidden'));
+});
+
+
+test('ЛК: админ видит «Админку» и сохраняет новую ссылку на чат', async (t) => {
+  const a = await usdtApp(t, initial, { id: 42, name: 'Шеф', isAdmin: true });
+  a.document.querySelector('[data-tab="profile"]').click();
+  await tick();
+  const input = a.document.querySelector('#lcChatLink');
+  assert.ok(input, 'админ видит поле ссылки на чат');
+  assert.equal(input.value, usdtSettings.chat, 'поле предзаполнено текущей ссылкой');
+  a.handle((url) => {
+    if (url === '/api/admin/settings/chat') {
+      return a.json({ settings: { ...usdtSettings, chat: 'https://t.me/+brand_new_chat' } });
+    }
+    return null;
+  });
+  input.value = 'https://t.me/+brand_new_chat';
+  a.document.querySelector('#lcChatSave').click();
+  await tick();
+  const post = a.calls.find((c) => c.pathname === '/api/admin/settings/chat');
+  assert.ok(post, 'ссылка ушла на сервер');
+  assert.equal(JSON.parse(post.body).chat, 'https://t.me/+brand_new_chat');
+  assert.match(a.document.querySelector('#view-profile').innerHTML, /brand_new_chat/, 'контакты пересобраны со свежей ссылкой');
 });
