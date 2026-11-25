@@ -36,6 +36,25 @@ if (adminIds.some((id) => !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number
   throw new Error('ADMIN_ID / ADMIN_IDS должны содержать положительные Telegram ID, разделённые запятыми.');
 }
 
+// Telegram пускает web_app-кнопки только по https. На хостингах PUBLIC_URL нередко
+// задают без схемы или с http:// — нормализуем вместо тихого падения каждой отправки.
+function normalizePublicUrl(raw) {
+  const value = String(raw || '').trim().replace(/\/+$/, '');
+  if (!value) return null;
+  let url = value;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) url = 'https://' + url;
+  else if (/^http:\/\//i.test(url)) url = 'https://' + url.slice('http://'.length);
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' || !parsed.hostname.includes('.')) throw new Error('not https');
+    return url.replace(/\/+$/, '');
+  } catch (e) {
+    console.error(`[config] PUBLIC_URL="${value}" не похож на https-адрес — кнопки приложения будут скрыты.`);
+    return null;
+  }
+}
+const publicUrl = normalizePublicUrl(process.env.PUBLIC_URL);
+
 module.exports = {
   botToken: (process.env.BOT_TOKEN || '').trim(),
   adminId: (process.env.ADMIN_ID || '').trim(), // совместимость со старыми сообщениями
@@ -43,5 +62,5 @@ module.exports = {
   port: listen.port,
   portSource: listen.source,
   host: '0.0.0.0',
-  publicUrl: ((process.env.PUBLIC_URL || '').trim().replace(/\/+$/, '')) || null,
+  publicUrl,
 };

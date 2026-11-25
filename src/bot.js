@@ -979,6 +979,10 @@ async function startBot() {
   for (const order of store.activeOrders()) await sendOrUpdateOrderAdmin(order);
 
   const applyPublicUrl = async (url, notifyAdmin = true) => {
+    if (!/^https:\/\//i.test(String(url || ''))) {
+      console.error('[VEGA] publicUrl не https — кнопка меню Telegram не установлена:', url);
+      return;
+    }
     try {
       await bot.api.setChatMenuButton({ menu_button: { type: 'web_app', text: 'Открыть обменник', web_app: { url } } });
       console.log('[VEGA] кнопка меню Telegram настроена на', url);
