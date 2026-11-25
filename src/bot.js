@@ -452,7 +452,6 @@ function settingsKb(s) {
     .text(`🎁 Gift комиссия ${s.giftPercent ?? 0}%`, 's:fee_gift')
     .text(`${on('GOOGLE_USD')} Google Gift`, 's:dir_GOOGLE_USD')
     .row()
-    .text('✍️ Курс Gift', 's:rate_gift')
     .text('🔄 Обновить курс', 's:refresh')
     .row()
     .text('⬇️ Мин. сумма', 's:min')
@@ -546,7 +545,6 @@ const SET_FIELDS = {
     key: 'giftPercent',
     discount: true,
   },
-  rate_gift: { label: 'курс Google Gift Card в USDT за $1 номинала (например 1 — по номиналу, 0.85 — с комиссией 15%)', num: true, key: 'rateGOOGLEUSD' },
   min: { label: 'минимальную сумму обмена (₽)', num: true, key: 'minRub' },
   max: { label: 'максимальную сумму обмена (₽)', num: true, key: 'maxRub' },
   ref: { label: 'реферальный процент (например 1)', num: true, key: 'refPercent' },
