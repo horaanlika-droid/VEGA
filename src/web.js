@@ -9,10 +9,14 @@ const { validateInitData, parseUser } = require('./validate');
 
 const clientOrder = (o) => ({
   id: o.id,
+  direction: o.direction || 'buy',
   rub: o.rub,
   currency: o.currency,
   network: o.network || null,
   currencyLabel: currencies.label(o.currency, o.network),
+  units: o.units ?? null,
+  giftCode: o.giftCode || null,
+  receiptName: o.receiptName || null,
   wallet: o.wallet,
   crypto: o.crypto,
   rate: o.rate,
@@ -32,6 +36,19 @@ const clientUser = (u) => ({
   referrer: u.referrer,
   referredCount: u.referredCount || 0,
 });
+
+// Сколько USDT получит клиент, отдавший карту на units долларов.
+// Курс зависит от сети USDT: TRC20 и ERC20 считаются по своим курсам.
+function giftPayout(settings, units, network) {
+  const rate = currencies.rateOf(settings, 'USDT', network);
+  if (!(rate > 0)) return null;
+  const usd = currencies.rateOf(settings, 'GOOGLE_USD', null);
+  if (!(usd > 0)) return null;
+  const dec = currencies.payoutDecimals('GOOGLE_USD');
+  const mul = 10 ** dec;
+  const crypto = Math.floor(((Number(units) || 0) * usd) / rate * mul + 1e-6) / mul;
+  return { crypto, rate, giftRate: usd };
+}
 
 function startWeb() {
   const app = express();
@@ -130,6 +147,49 @@ function startWeb() {
     if (!currencies.isEnabled(s, pair.key)) {
       return res.status(400).json({ error: `Обмен ${pair.label} временно не проводится — выберите другое направление.` });
     }
+    const user = store.touchUser(a.user, req.body.startParam || '');
+
+    /* ---------- гифт-карта → USDT ---------- */
+    if (pair.kind === 'gift') {
+      const units = Number(req.body.units ?? req.body.cryptoAmount);
+      const unitsError = currencies.validateUnits(pair.currency, pair.network, units);
+      if (unitsError) return res.status(400).json({ error: unitsError });
+      const giftCode = String(req.body.giftCode || '').trim();
+      if (giftCode.length < 8 || giftCode.length > 200 || /\s{2,}/.test(giftCode)) {
+        return res.status(400).json({ error: 'Введите код подарочной карты (8–200 символов).' });
+      }
+      // Сеть выплаты определяем по адресу: T… → TRC20, 0x… → ERC20.
+      const giftNetwork = currencies.networkByWallet(wallet);
+      if (!giftNetwork) {
+        return res.status(400).json({ error: pair.walletError });
+      }
+      const payout = giftPayout(s, units, giftNetwork);
+      if (!payout) {
+        return res.status(400).json({ error: `Выплата USDT в сети ${giftNetwork} недоступна — выберите другой адрес.` });
+      }
+      if (!(payout.crypto > 0)) {
+        return res.status(400).json({ error: 'Слишком маленькая сумма к выплате — увеличьте номинал карты.' });
+      }
+      const order = store.createOrder({
+        userId: String(user.id),
+        userName: user.name,
+        userUsername: user.username,
+        direction: 'sell',
+        rub: Math.round(units * payout.giftRate),
+        units,
+        currency: pair.currency,
+        network: giftNetwork,
+        giftCode,
+        wallet,
+        rate: payout.rate,
+        crypto: payout.crypto,
+        referrer: user.referrer,
+      });
+      bus.emit('order_event', { order, type: 'new' });
+      return res.json({ order: clientOrder(order) });
+    }
+
+    /* ---------- покупка крипты за рубли ---------- */
     const rate = currencies.rateOf(s, pair.currency, pair.network);
     if (!rate) return res.status(400).json({ error: `Курс ${pair.label} ещё не настроен — выберите другое направление.` });
     const walletError = currencies.validateWallet(pair.currency, pair.network, wallet);
@@ -151,11 +211,11 @@ function startWeb() {
     }
     if (rub < s.minRub) return res.status(400).json({ error: `Минимальная сумма — ${s.minRub} ₽` });
     if (rub > s.maxRub) return res.status(400).json({ error: `Максимальная сумма — ${s.maxRub} ₽` });
-    const user = store.touchUser(a.user, req.body.startParam || '');
     const order = store.createOrder({
       userId: String(user.id),
       userName: user.name,
       userUsername: user.username,
+      direction: 'buy',
       rub,
       currency: pair.currency,
       network: pair.network,

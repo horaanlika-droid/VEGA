@@ -178,6 +178,16 @@ test('calculator converts both ways and never mentions any fee', async (t) => {
 
 /* ---------- USDT TRC20 / ERC20 ---------- */
 
+const giftDir = {
+  key: 'GOOGLE_USD', direction: 'sell', currency: 'GOOGLE_USD', network: null, kind: 'gift',
+  label: 'Google Gift Card', symbol: '🎁', coin: 'google', decimals: 0, display: 0,
+  unit: 'USD', step: 10, minUnits: 10,
+  walletHint: 'Адрес USDT-кошелька (T… или 0x…)',
+  walletPattern: '^(T[1-9A-HJ-NP-Za-km-z]{33}|0x[0-9a-fA-F]{40})$',
+  walletError: 'Укажите адрес USDT: TRC20 начинается с T (34 символа), ERC20 — 0x и 40 hex-символов.',
+  rate: 86.02, enabled: true,
+};
+
 const usdtSettings = {
   ...settings,
   rateUSDTTRC20: 98.75,
@@ -187,6 +197,7 @@ const usdtSettings = {
     { key: 'LTC', currency: 'LTC', network: null, label: 'LTC', symbol: 'Ł', coin: 'ltc', decimals: 8, display: null, walletHint: 'Адрес LTC-кошелька', walletPattern: '^(ltc1[a-zA-HJ-NP-Z0-9]{25,62}|[LM3][a-km-zA-HJ-NP-Z1-9]{25,34})$', walletError: 'Проверьте адрес LTC-кошелька — он выглядит некорректно.', rate: settings.rateLTC, enabled: true },
     { key: 'USDT_TRC20', currency: 'USDT', network: 'TRC20', label: 'USDT TRC20', symbol: '₮', coin: 'usdt', decimals: 6, display: 2, walletHint: 'Адрес USDT TRC20 (T…, 34 символа)', walletPattern: '^T[1-9A-HJ-NP-Za-km-z]{33}$', walletError: 'Это не похоже на адрес USDT в сети TRC20 — он начинается с T и содержит 34 символа.', networkHint: 'сеть TRON · низкая комиссия, зачисление 1–3 мин', rate: 98.75, enabled: true },
     { key: 'USDT_ERC20', currency: 'USDT', network: 'ERC20', label: 'USDT ERC20', symbol: '₮', coin: 'usdt', decimals: 6, display: 2, walletHint: 'Адрес USDT ERC20 (0x + 40 символов)', walletPattern: '^0x[0-9a-fA-F]{40}$', walletError: 'Это не похоже на адрес USDT в сети ERC20 — нужен 0x и 40 hex-символов.', networkHint: 'сеть Ethereum · высокая комиссия сети, зачисление 5–15 мин', rate: 101.5, enabled: true },
+    giftDir,
   ],
 };
 
@@ -285,4 +296,95 @@ test('history shows USDT network and 2-decimal payout', async (t) => {
   assert.match(a.document.querySelector('#view-history').textContent, /USDT TRC20/);
   assert.match(a.document.querySelector('#view-history').textContent, /101\.27 USDT/);
   assert.match(a.document.querySelector('.h-ic.usdt').textContent, /TRC/);
+});
+
+/* ---------- Google Gift Card → USDT ---------- */
+
+test('gift card lives in a separate "sell" mode, not in the buy segment', async (t) => {
+  const a = await usdtApp(t);
+  const keys = [...a.document.querySelectorAll('#segCur button')].map((b) => b.dataset.c);
+  assert.deepEqual(keys, ['BTC', 'LTC', 'USDT_TRC20', 'USDT_ERC20'], 'карта не попадает в сегмент покупки');
+  const modes = [...a.document.querySelectorAll('#segMode button')].map((b) => b.dataset.m);
+  assert.deepEqual(modes, ['buy', 'sell']);
+  assert.ok(a.document.querySelector('#sellForm').classList.contains('hidden'));
+  a.document.querySelectorAll('#segMode button')[1].click();
+  assert.ok(!a.document.querySelector('#sellForm').classList.contains('hidden'));
+  assert.ok(a.document.querySelector('#buyForm').classList.contains('hidden'));
+  assert.match(a.document.querySelector('#giftRule').textContent, /кратно \$10/);
+});
+
+test('gift nominal is rounded to a multiple of $10 and payout follows the USDT network', async (t) => {
+  const a = await usdtApp(t);
+  a.document.querySelectorAll('#segMode button')[1].click();
+  const units = a.document.querySelector('#inUnits');
+  units.value = '37';
+  units.dispatchEvent(new a.window.Event('input', { bubbles: true }));
+  // 37 → 30; по умолчанию считаем TRC20: 30 × 86.02 / 98.75 = 26.13
+  assert.equal(a.document.querySelector('#outUsdt').value, '26.13 USDT');
+  // Адрес ERC20 меняет курс выплаты: 30 × 86.02 / 101.5 = 25.42
+  const wallet = a.document.querySelector('#inUsdtWallet');
+  wallet.value = '0x' + 'a'.repeat(40);
+  wallet.dispatchEvent(new a.window.Event('input', { bubbles: true }));
+  assert.equal(a.document.querySelector('#outUsdt').value, '25.42 USDT · ERC20');
+  // Быстрый номинал подставляет значение.
+  a.document.querySelectorAll('#segNom button')[2].click();
+  assert.equal(units.value, '50');
+  assert.match(a.document.querySelector('#giftMeta').textContent, /\$50/);
+});
+
+test('selling a card sends units, code and wallet to the API', async (t) => {
+  const a = await usdtApp(t);
+  a.document.querySelectorAll('#segMode button')[1].click();
+  a.document.querySelector('#inUnits').value = '20';
+  a.document.querySelector('#inGiftCode').value = 'ABCD-EFGH-IJKL-MNOP';
+  a.document.querySelector('#inUsdtWallet').value = 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ';
+  a.handle((url, options) => {
+    if (url === '/api/orders') {
+      return a.json({ order: { ...initial, id: 5, direction: 'sell', currency: 'GOOGLE_USD', units: 20, network: 'TRC20', giftCode: 'ABCD-EFGH-IJKL-MNOP', crypto: 17.42, status: 'new' } });
+    }
+    return null;
+  });
+  a.document.querySelector('#btnSell').click();
+  await tick();
+  const post = a.calls.find((c) => c.pathname === '/api/orders');
+  assert.ok(post, 'запрос на создание заявки ушёл');
+  const body = JSON.parse(post.body);
+  assert.equal(body.currency, 'GOOGLE_USD');
+  assert.equal(body.units, 20);
+  assert.equal(body.giftCode, 'ABCD-EFGH-IJKL-MNOP');
+  assert.equal(body.wallet, 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ');
+  assert.match(a.document.querySelector('#exOrder').textContent, /Проверяем карту/);
+});
+
+test('gift form rejects a missing code, a bad wallet and a nominal below $10', async (t) => {
+  const a = await usdtApp(t);
+  a.document.querySelectorAll('#segMode button')[1].click();
+  const units = a.document.querySelector('#inUnits');
+  units.value = '5';
+  units.dispatchEvent(new a.window.Event('input', { bubbles: true }));
+  a.document.querySelector('#btnSell').click();
+  await tick();
+  assert.match(a.document.querySelector('#giftErr').textContent, /\$10/);
+  units.value = '20';
+  a.document.querySelector('#btnSell').click();
+  await tick();
+  assert.match(a.document.querySelector('#giftCodeErr').textContent, /код/i);
+  a.document.querySelector('#inGiftCode').value = 'GOOD-CODE-1234';
+  a.document.querySelector('#inUsdtWallet').value = 'bc1' + 'a'.repeat(30);
+  a.document.querySelector('#btnSell').click();
+  await tick();
+  assert.match(a.document.querySelector('#giftErr').textContent, /USDT/);
+  assert.ok(!a.calls.some((c) => c.pathname === '/api/orders'));
+});
+
+test('completed gift order in history shows nominal and USDT payout', async (t) => {
+  const giftOrder = {
+    ...initial, id: 1, direction: 'sell', currency: 'GOOGLE_USD', units: 50, network: 'TRC20',
+    giftCode: 'HIST-CODE-5555', crypto: 43.56, status: 'completed',
+  };
+  const a = await usdtApp(t, giftOrder);
+  const history = a.document.querySelector('#view-history').textContent;
+  assert.match(history, /\$50/);
+  assert.match(history, /43\.56 USDT/);
+  assert.ok(!/₽ → GOOGLE_USD/.test(history), 'в истории нет бессмысленной подписи рубль→карта');
 });

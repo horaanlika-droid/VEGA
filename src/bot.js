@@ -30,14 +30,27 @@ const dirShort = (o) => currencies.shortLabel(o.currency, o.network);
 const cryptoText = (o, amount = o.crypto) =>
   fmtCrypto(amount, o.currency, currencies.displayDecimals(o.currency, o.network));
 
+const isGift = (o) => o.direction === 'sell' || currencies.isGift(o.currency, o.network);
+const giftUnits = (o) => Number(o.units) || 0;
+// Выплата по гифт-карте — всегда USDT, поэтому подпись суммы отдельная.
+const payoutText = (o, amount = o.crypto) =>
+  isGift(o)
+    ? `${fmtCrypto(amount, 'USDT', 2)} (${o.network || 'USDT'})`
+    : fmtCrypto(amount, o.currency, currencies.displayDecimals(o.currency, o.network));
+
 function orderText(o) {
   const ref = o.referrer ? store.getUser(o.referrer) : null;
   return (
     `📥 <b>Заявка #${o.id}</b>\n` +
     `👤 ${esc(o.userName)}${o.userUsername ? ' (@' + esc(o.userUsername) + ')' : ''} · <code>${esc(o.userId)}</code>\n` +
     `💵 Сумма: <b>${fmtRub(o.rub)}</b>\n` +
-    `🪙 Валюта: <b>${esc(dirLabel(o))}</b> ≈ ${cryptoText(o)}\n` +
-    `👛 Кошелёк: <code>${esc(o.wallet)}</code>\n` +
+    (isGift(o)
+      ? `🎁 Карта: <b>Google Gift Card $${giftUnits(o)}</b> → выплата ${payoutText(o)}\n` +
+        `🎟 Код карты: <code>${esc(o.giftCode || '—')}</code>\n` +
+        `👛 Кошелёк клиента: <code>${esc(o.wallet || '—')}</code>\n`
+      : `🪙 Валюта: <b>${esc(dirLabel(o))}</b> ≈ ${cryptoText(o)}\n` +
+        `👛 Кошелёк: <code>${esc(o.wallet)}</code>\n`) +
+    (o.receiptName ? `🖼 Скрин карты: ${esc(o.receiptName)}\n` : '') +
     `🧬 Реферер: ${ref ? esc(ref.name) + ' (#' + esc(ref.id) + ')' : '—'}\n` +
     (o.requisites ? `🏦 Реквизиты: ${esc(o.requisites)}\n` : '') +
     (o.payRub ? `💰 К оплате: <b>${fmtRub(o.payRub)}</b>\n` : '') +
@@ -52,7 +65,10 @@ function orderText(o) {
 
 function orderKb(o) {
   const kb = new InlineKeyboard();
-  if (o.status === 'new') {
+  if (o.status === 'new' && isGift(o)) {
+    // Карту сначала проверяют, затем подтверждают и выплачивают USDT.
+    kb.text('✅ Карта проверена — выплатить', `o:${o.id}:confirm`).text('❌ Отклонить', `o:${o.id}:reject`);
+  } else if (o.status === 'new') {
     kb.text('💳 Выдать реквизиты', `o:${o.id}:req`).text('❌ Отклонить', `o:${o.id}:reject`);
   } else if (o.status === 'details') {
     kb.text('✅ Оплачено (подтвердить)', `o:${o.id}:confirm`)
@@ -276,7 +292,7 @@ async function supportThreadView(ctx, userId, edit = true) {
 function rateLine(s) {
   return currencies
     .list()
-    .filter((p) => currencies.isEnabled(s, p.key))
+    .filter((p) => currencies.isEnabled(s, p.key) && p.direction !== 'sell')
     .map((p) => `${p.symbol} ${fmtRub(s[p.rateKey] || 0)}`)
     .join(' · ');
 }
@@ -315,7 +331,8 @@ async function ordersMenu(ctx, edit = true) {
       : ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
   }
   for (const o of list.slice(0, 8)) {
-    kb.text(`#${o.id} · ${dirShort(o)} · ${fmtRub(o.rub)} · ${o.status === 'new' ? '🔍' : o.status === 'paid' ? '⏳' : '💳'}`, `o:${o.id}`).row();
+    const amount = isGift(o) ? `🎁 $${giftUnits(o)}` : fmtRub(o.rub);
+    kb.text(`#${o.id} · ${isGift(o) ? 'Google Gift' : dirShort(o)} · ${amount} · ${o.status === 'new' ? '🔍' : o.status === 'paid' ? '⏳' : '💳'}`, `o:${o.id}`).row();
   }
   kb.text('🔄 Обновить', 'm:orders').text('↩️ Назад', 'm:home');
   const text = '📥 <b>Активные заявки</b> — нажмите, чтобы открыть:';
@@ -331,13 +348,18 @@ function settingsKb(s) {
     .text(`₮ TRC20 ${s[usdt.feeKey] ?? 0}%`, 's:fee_trc20')
     .row()
     .text(`₮ ERC20 ${s[errc.feeKey] ?? 0}%`, 's:fee_erc20')
-    .text('🔄 Обновить курс', 's:refresh')
     .row()
     .text(`${currencies.isEnabled(s, 'USDT_TRC20') ? '✅' : '⛔'} USDT TRC20`, 's:dir_USDT_TRC20')
     .text(`${currencies.isEnabled(s, 'USDT_ERC20') ? '✅' : '⛔'} USDT ERC20`, 's:dir_USDT_ERC20')
     .row()
     .text('✍️ Курс ₮ TRC20', 's:rate_trc20')
     .text('✍️ Курс ₮ ERC20', 's:rate_erc20')
+    .row()
+    .text(`🎁 Gift % ${s.feePercentGOOGLEUSD ?? 0}%`, 's:fee_gift')
+    .text(`${currencies.isEnabled(s, 'GOOGLE_USD') ? '✅' : '⛔'} Google Gift`, 's:dir_GOOGLE_USD')
+    .row()
+    .text('✍️ Курс Gift', 's:rate_gift')
+    .text('🔄 Обновить курс', 's:refresh')
     .row()
     .text('⬇️ Мин. сумма', 's:min')
     .text('⬆️ Макс. сумма', 's:max')
@@ -368,6 +390,9 @@ function settingsText(s) {
     `💰 Комиссия: <b>${s.feePercent ?? 0}%</b> BTC/LTC · ` +
     `<b>${s[usdt.feeKey] ?? 0}%</b> USDT TRC20 · <b>${s[errc.feeKey] ?? 0}%</b> USDT ERC20\n` +
     `💵 Курс для клиентов: <b>${rateLine(s)}</b>\n` +
+    (s.baseRateGOOGLEUSD
+      ? `🎁 Google Gift: официальный $ = ${s.baseRateGOOGLEUSD} ₽ · платим <b>${s.rateGOOGLEUSD ?? '—'} ₽ за $1</b> (скидка ${s.feePercentGOOGLEUSD ?? 0}%)\n`
+      : `🎁 Google Gift: платим <b>${s.rateGOOGLEUSD ?? '—'} ₽ за $1</b> (скидка ${s.feePercentGOOGLEUSD ?? 0}%)\n`) +
     `🕹 Направления: ${currencies.list().map((p) => `${p.key} ${currencies.isEnabled(s, p.key) ? '✅' : '⛔'}`).join(' · ')}\n` +
     `Лимиты: ${fmtRub(s.minRub)} — ${fmtRub(s.maxRub)}\n` +
     `🎁 Реферальный процент: <b>${s.refPercent}%</b>\n` +
@@ -420,6 +445,14 @@ const SET_FIELDS = {
   // Ручной курс USDT за 1 USDT в рублях — если автообновление недоступно.
   rate_trc20: { label: 'курс USDT TRC20 в ₽ за 1 USDT (например 100.5)', num: true, key: 'rateUSDTTRC20' },
   rate_erc20: { label: 'курс USDT ERC20 в ₽ за 1 USDT (например 101.5)', num: true, key: 'rateUSDTERC20' },
+  // Гифт-карты: клиент отдаёт карту, мы платим USDT, поэтому процент — скидка к курсу USD.
+  fee_gift: {
+    label: 'скидку на Google Gift Card в % от официального курса USD (0–50, например 8)',
+    num: true,
+    key: 'feePercentGOOGLEUSD',
+    discount: true,
+  },
+  rate_gift: { label: 'курс Google Gift Card в ₽ за $1 номинала (например 86)', num: true, key: 'rateGOOGLEUSD' },
   min: { label: 'минимальную сумму обмена (₽)', num: true, key: 'minRub' },
   max: { label: 'максимальную сумму обмена (₽)', num: true, key: 'maxRub' },
   ref: { label: 'реферальный процент (например 1)', num: true, key: 'refPercent' },
@@ -528,14 +561,18 @@ async function handleAdminText(ctx) {
       if (field.num) {
         const n = parseNum(text);
         if (f.type.startsWith('set:fee')) {
-          if (!isFinite(n) || n < 0 || n > 50) return ctx.reply('Комиссия — число от 0 до 50. Пример: 2');
+          if (!isFinite(n) || n < 0 || n > 50) {
+            return ctx.reply(field.discount
+              ? 'Скидка на гифт-карты — число от 0 до 50 %. Пример: 8'
+              : 'Комиссия — число от 0 до 50. Пример: 2');
+          }
         } else if (!isFinite(n) || n <= 0) {
           return ctx.reply('Нужно положительное число.');
         }
         store.mutate((db) => {
           db.settings[field.key || f.type.slice(4)] = n;
         });
-        // Комиссии пересчитывают итоговые курсы; ручной курс USDT применяется как есть.
+        // Комиссии пересчитывают итоговые курсы; ручные курсы применяются как есть.
         if (f.type.startsWith('set:fee')) rates.recomputeWithFee();
       } else {
         store.mutate((db) => {
@@ -703,6 +740,8 @@ function register() {
         return txPrompt(ctx, o);
       }
       const allowed = { req: ['new'], quote: ['new'], amt: ['details'], reject: ['new', 'details'], unpaid: ['paid'], confirm: ['details', 'paid'] };
+      // Гифт-карту подтверждают сразу из «новой»: реквизиты клиенту не нужны.
+      if (isGift(o) && act === 'confirm' && o.status === 'new') allowed.confirm = ['new', 'details', 'paid'];
       if (!allowed[act]?.includes(o.status)) {
         return ctx.reply('Действие недоступно: статус заявки уже изменился. Откройте заявку заново.', { reply_markup: homeKb() });
       }
@@ -723,7 +762,11 @@ function register() {
         const upd = store.updateOrder(id, { status: 'completed' });
         await sendOrUpdateOrderAdmin(upd);
         await ctx.reply(
-          `📨 <b>Заявка #${id} завершена.</b>\nОтправьте клиенту вручную:\n🪙 <b>${cryptoText(upd)}</b> (${esc(dirShort(upd))})\n👛 <code>${esc(upd.wallet)}</code>\n\n💡 Теперь вы можете опционально отправить ссылку на блокчейн-транзакцию — нажмите кнопку ниже.`,
+          `📨 <b>Заявка #${id} завершена.</b>\n` +
+          (isGift(upd)
+            ? `🎁 Карта Google на $${giftUnits(upd)} проверена.\nОтправьте клиенту ${payoutText(upd)} на кошелёк:\n👛 <code>${esc(upd.wallet)}</code>\n\n`
+            : `Отправьте клиенту вручную:\n🪙 <b>${cryptoText(upd)}</b> (${esc(dirShort(upd))})\n👛 <code>${esc(upd.wallet)}</code>\n\n`) +
+          `💡 Теперь вы можете опционально отправить ссылку на блокчейн-транзакцию — нажмите кнопку ниже.`,
           { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('🔗 Добавить ссылку на блокчейн', `o:${id}:tx`) }
         );
         return;

@@ -19,7 +19,10 @@ const defaults = () => ({
     feePercentUSDTERC20: 5, // комиссия по USDT ERC20 (дорогие комиссии сети)
     rateUSDTTRC20: 100, // стартовые итоговые курсы для USDT (₽ за 1 USDT)
     rateUSDTERC20: 101,
-    enabled: { BTC: true, LTC: true, USDT_TRC20: true, USDT_ERC20: true },
+    baseRateGOOGLEUSD: null, // официальный курс USD → ₽ (ЦБ) без наценки
+    feePercentGOOGLEUSD: 8, // наценка на подарочные карты Google, %
+    rateGOOGLEUSD: 105, // стартовый итоговый курс (₽ за $1 номинала)
+    enabled: { BTC: true, LTC: true, USDT_TRC20: true, USDT_ERC20: true, GOOGLE_USD: true },
     rateUpdatedAt: null,
     rateSource: 'manual',
     minRub: 3000,
@@ -173,7 +176,11 @@ function createOrder(o) {
       rub: o.rub,
       currency: o.currency,
       network: o.network || null,
-      wallet: o.wallet,
+      direction: o.direction || 'buy', // 'buy' (₽ → крипта) | 'sell' (гифт-карта → USDT)
+      units: o.units ?? null, // номинал подарочной карты, $ (для kind: 'gift')
+      giftCode: o.giftCode || null, // код карты (виден только клиенту и оператору)
+      receiptName: o.receiptName || null, // скриншот карты из чата
+      wallet: o.wallet || '',
       rate: o.rate,
       crypto: o.crypto,
       status: 'new',

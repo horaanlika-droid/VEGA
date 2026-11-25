@@ -321,7 +321,7 @@ const ERC_WALLET = '0x' + 'Ab1'.repeat(13) + 'a';
 test('settings expose USDT TRC20/ERC20 rates with per-network fee and no fee leak', async () => {
   const pub = await (await fetch(`http://127.0.0.1:${server.address().port}/api/settings`)).json();
   const byKey = Object.fromEntries(pub.rates.map((r) => [r.key, r]));
-  assert.deepEqual(Object.keys(byKey).sort(), ['BTC', 'LTC', 'USDT_ERC20', 'USDT_TRC20']);
+  assert.deepEqual(Object.keys(byKey).sort(), ['BTC', 'GOOGLE_USD', 'LTC', 'USDT_ERC20', 'USDT_TRC20']);
   assert.equal(byKey.USDT_TRC20.currency, 'USDT');
   assert.equal(byKey.USDT_TRC20.network, 'TRC20');
   assert.equal(byKey.USDT_TRC20.label, 'USDT TRC20');
@@ -522,6 +522,185 @@ test('implausible USDT prices are ignored altogether', async () => {
     const official = await rates.fetchOfficial();
     // Мусорные 9000 ₽ за USDT не попадают: берём следующий по приоритету источник.
     assert.equal(official.usdt, 94);
+  } finally {
+    global.fetch = realFetch;
+  }
+});
+
+/* ---------- Google Gift Card → USDT ---------- */
+
+test('gift settings expose USD rate, step $10 and no fee leak', async () => {
+  const pub = await (await fetch(`http://127.0.0.1:${server.address().port}/api/settings`)).json();
+  const gift = pub.rates.find((r) => r.key === 'GOOGLE_USD');
+  assert.ok(gift, 'направление гифт-карт в настройках');
+  assert.equal(gift.direction, 'sell');
+  assert.equal(gift.kind, 'gift');
+  assert.equal(gift.step, 10);
+  assert.equal(gift.minUnits, 10);
+  assert.equal(gift.unit, 'USD');
+  assert.ok(gift.rate > 0, 'курс карты (₽ за $1) отдаётся клиенту');
+  assert.equal(gift.feePercentGOOGLEUSD, undefined);
+  assert.equal(gift.baseRateGOOGLEUSD, undefined);
+  assert.equal(gift.feePercent, undefined);
+});
+
+test('gift order: code + USDT address (TRC20), payout computed from card rate', async () => {
+  const s = store.get().settings;
+  const r = await api('/api/orders', {
+    method: 'POST',
+    body: {
+      currency: 'GOOGLE_USD',
+      units: 30,
+      giftCode: 'ABCD-EFGH-IJKL-MNOP',
+      wallet: TRC_WALLET,
+      startParam: '',
+    },
+  });
+  assert.equal(r.status, 200);
+  const { order } = await r.json();
+  assert.equal(order.direction, 'sell');
+  assert.equal(order.currency, 'GOOGLE_USD');
+  assert.equal(order.units, 30);
+  assert.equal(order.network, 'TRC20', 'сеть выплаты определена по адресу');
+  assert.equal(order.giftCode, 'ABCD-EFGH-IJKL-MNOP');
+  assert.equal(order.status, 'new');
+  // Ожидаемая выплата: 30$ × курс карты / курс USDT TRC20, вниз до копеек.
+  const expected = Math.floor((30 * s.rateGOOGLEUSD / s.rateUSDTTRC20) * 100 + 1e-6) / 100;
+  assert.equal(order.crypto, expected);
+  assert.equal(order.rate, s.rateUSDTTRC20);
+  calls = [];
+  await bus.emit('order_event', { order: store.getOrder(order.id), type: 'new' });
+  const card = calls.find((c) => String(c.text || '').includes('Заявка #'));
+  assert.ok(card, 'карточка оператору отправлена');
+  assert.match(card.text, /Google Gift Card \$30/);
+  assert.match(card.text, /ABCD-EFGH-IJKL-MNOP/);
+  assert.ok(calls.some((c) => JSON.stringify(c.reply_markup || {}).includes('Карта проверена')), 'кнопка «Карта проверена» вместо выдачи реквизитов');
+});
+
+test('gift order: ERC20 address gives ERC20 payout at its own rate', async () => {
+  const s = store.get().settings;
+  const r = await api('/api/orders', {
+    method: 'POST',
+    body: { currency: 'GOOGLE_USD', units: 20, giftCode: 'ERC20-CODE-1234', wallet: ERC_WALLET },
+  });
+  assert.equal(r.status, 200);
+  const { order } = await r.json();
+  assert.equal(order.network, 'ERC20');
+  const expected = Math.floor((20 * s.rateGOOGLEUSD / s.rateUSDTERC20) * 100 + 1e-6) / 100;
+  assert.equal(order.crypto, expected);
+  await bus.emit('order_event', { order: store.getOrder(order.id), type: 'new' });
+});
+
+test('gift nominal must be a multiple of $10 and at least $10', async () => {
+  for (const units of [5, 9, 15, 25, 0, -10, 'мусор']) {
+    const r = await api('/api/orders', {
+      method: 'POST',
+      body: { currency: 'GOOGLE_USD', units, giftCode: 'CODE-CODE-CODE', wallet: TRC_WALLET },
+    });
+    assert.equal(r.status, 400, `номинал ${units} должен быть отклонён`);
+  }
+  const ok = await api('/api/orders', {
+    method: 'POST',
+    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'CODE-CODE-CODE', wallet: TRC_WALLET },
+  });
+  assert.equal(ok.status, 200);
+  await bus.emit('order_event', { order: store.getOrder((await ok.json()).order.id), type: 'new' });
+});
+
+test('gift order requires a card code and a USDT address', async () => {
+  const noCode = await api('/api/orders', {
+    method: 'POST',
+    body: { currency: 'GOOGLE_USD', units: 10, giftCode: '  ', wallet: TRC_WALLET },
+  });
+  assert.equal(noCode.status, 400);
+  const badWallet = await api('/api/orders', {
+    method: 'POST',
+    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'CODE-CODE-CODE', wallet: 'bc1' + 'a'.repeat(30) },
+  });
+  assert.equal(badWallet.status, 400);
+  assert.match((await badWallet.json()).error, /USDT/);
+});
+
+test('operator confirms a gift card from "new" — no requisites step', async () => {
+  const o = (await (await api('/api/orders', {
+    method: 'POST',
+    body: { currency: 'GOOGLE_USD', units: 50, giftCode: 'CONFIRM-CODE-9999', wallet: TRC_WALLET },
+  })).json()).order;
+  await bus.emit('order_event', { order: store.getOrder(o.id), type: 'new' });
+  calls = [];
+  await click(111, `o:${o.id}:confirm`);
+  const done = store.getOrder(o.id);
+  assert.equal(done.status, 'completed');
+  const msg = calls.find((c) => String(c.text || '').includes('завершена'));
+  assert.ok(msg, 'оператор получил инструкцию по выплате');
+  assert.match(msg.text, /Карта Google на \$50 проверена/);
+  assert.match(msg.text, /USDT/);
+  const { order } = await (await api(`/api/order/${o.id}`)).json();
+  assert.equal(order.status, 'completed');
+  assert.equal(order.giftCode, 'CONFIRM-CODE-9999');
+});
+
+test('gift card fee is separate: it lowers the card rate, USDT fees stay intact', async () => {
+  const before = { ...store.get().settings };
+  await click(111, 's:fee_gift');
+  await text(111, '12');
+  const s = store.get().settings;
+  assert.equal(s.feePercentGOOGLEUSD, 12);
+  assert.equal(s.feePercent, before.feePercent, 'общая комиссия BTC/LTC не менялась');
+  assert.equal(s.feePercentUSDTTRC20, before.feePercentUSDTTRC20, 'комиссия USDT TRC20 не менялась');
+  if (s.baseRateGOOGLEUSD) {
+    // Клиент отдаёт карту → платим меньше официального курса USD на скидку.
+    assert.equal(s.rateGOOGLEUSD, Math.round(s.baseRateGOOGLEUSD * 0.88 * 100) / 100);
+    assert.ok(s.rateGOOGLEUSD < s.baseRateGOOGLEUSD);
+  }
+  // Ручной курс карты применяется сразу.
+  await click(111, 's:rate_gift');
+  await text(111, '84,5');
+  assert.equal(store.get().settings.rateGOOGLEUSD, 84.5);
+  const pub = await (await fetch(`http://127.0.0.1:${server.address().port}/api/settings`)).json();
+  assert.equal(pub.rates.find((r) => r.key === 'GOOGLE_USD').rate, 84.5);
+});
+
+test('disabled gift direction rejects new cards but keeps old orders', async () => {
+  const old = (await (await api('/api/orders', {
+    method: 'POST',
+    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'OLD-CODE-1111', wallet: TRC_WALLET },
+  })).json()).order;
+  await click(111, 's:dir_GOOGLE_USD');
+  assert.equal(currencies.isEnabled(store.get().settings, 'GOOGLE_USD'), false);
+  const denied = await api('/api/orders', {
+    method: 'POST',
+    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'NEW-CODE-2222', wallet: TRC_WALLET },
+  });
+  assert.equal(denied.status, 400);
+  const { order } = await (await api(`/api/order/${old.id}`)).json();
+  assert.equal(order.units, 10);
+  await click(111, 's:dir_GOOGLE_USD');
+  assert.equal(currencies.isEnabled(store.get().settings, 'GOOGLE_USD'), true);
+  await bus.emit('order_event', { order: store.getOrder(old.id), type: 'reject' });
+});
+
+test('official USD rate comes from ЦБ and drives the card rate', async () => {
+  const realFetch = global.fetch;
+  global.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('p2p.binance.com')) {
+      const type = new URL(u).searchParams.get('tradeType');
+      return { ok: true, json: async () => ({ data: [{ adv: { price: type === 'SELL' ? '95.10' : '94.80' } }] }) };
+    }
+    if (u.includes('coingecko')) return { ok: true, json: async () => ({ bitcoin: { rub: 9_800_000 }, litecoin: { rub: 9_000 }, tether: { rub: 94.1 } }) };
+    if (u.includes('cbr-xml-daily')) return { ok: true, json: async () => ({ Valute: { USD: { Value: 93.5 } } }) };
+    return { ok: false, status: 500, json: async () => ({}) };
+  };
+  try {
+    const official = await rates.fetchOfficial();
+    assert.equal(official.usd, 93.5);
+    store.mutate((db) => {
+      db.settings.feePercentGOOGLEUSD = 8;
+    });
+    const cardRate = rates.applyDiscount(official.usd, store.get().settings.feePercentGOOGLEUSD, 2);
+    assert.equal(cardRate, 86.02); // 93.5 − 8%
+    assert.ok(cardRate < official.usd, 'карту покупаем дешевле официального USD');
   } finally {
     global.fetch = realFetch;
   }

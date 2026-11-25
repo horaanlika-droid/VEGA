@@ -81,19 +81,15 @@ async function fromKrakenCbr() {
   const usd = num(cbr?.Valute?.USD?.Value);
   const btcUsd = num(ticker?.result?.XXBTZUSD?.c?.[0]);
   const ltcUsd = num(ticker?.result?.XLTCZUSD?.c?.[0]);
-  return { btc: btcUsd * usd, ltc: ltcUsd * usd, usdt: usd };
+  return { btc: btcUsd * usd, ltc: ltcUsd * usd, usdt: usd, usd };
 }
 
-// ЦБ РФ: если P2P и CoinGecko недоступны, считаем USDT ≈ USD.
-async function fromCbrUsdt() {
+// ЦБ РФ: официальный курс доллара. Для USDT это запасной вариант (USDT ≈ USD),
+// для подарочных карт Google — основной (номинал карты указан в долларах).
+async function fromCbrUsd() {
   const cbr = await fetchJson('https://www.cbr-xml-daily.ru/daily_json.js');
-  return { usdt: num(cbr?.Valute?.USD?.Value) };
-}
-
-// Запасной источник USDT — MOEX/ЦБ (см. выше): USDT ≈ USD.
-async function fromCbrUsdt() {
-  const cbr = await fetchJson('https://www.cbr-xml-daily.ru/daily_json.js');
-  return { usdt: num(cbr?.Valute?.USD?.Value) };
+  const usd = num(cbr?.Valute?.USD?.Value);
+  return { usd, usdt: usd };
 }
 
 // Источники возвращают частичный результат: курсы разных монет можно брать из разных источников.
@@ -102,7 +98,7 @@ const SOURCES = [
   ['binance-p2p', fromBinanceP2P],
   ['coinbase', fromCoinbase],
   ['kraken+cbr', fromKrakenCbr],
-  ['cbr-usdt', fromCbrUsdt],
+  ['cbr-usd', fromCbrUsd],
 ];
 
 // Грубая проверка правдоподобности, чтобы мусор из API не попал в курсы.
@@ -115,6 +111,8 @@ function clean(part) {
   if (Number.isFinite(btc) && btc > 10000 && btc < 1e9) out.btc = btc;
   if (Number.isFinite(ltc) && ltc > 100 && ltc < 1e7) out.ltc = ltc;
   if (Number.isFinite(usdt) && usdt > 20 && usdt < 400) out.usdt = usdt;
+  const usd = Number(part?.usd);
+  if (Number.isFinite(usd) && usd > 20 && usd < 400) out.usd = usd;
   if (out.btc && out.ltc) {
     const ratio = out.btc / out.ltc;
     if (!(ratio > 50 && ratio < 50000)) {
@@ -126,7 +124,9 @@ function clean(part) {
 }
 
 // Приоритет источников для USDT: P2P-рынок РФ честнее всего отражает реальную цену.
-const USDT_PRIORITY = ['binance-p2p', 'coingecko', 'kraken+cbr', 'cbr-usdt'];
+const USDT_PRIORITY = ['binance-p2p', 'coingecko', 'kraken+cbr', 'cbr-usd'];
+// Курс доллара для подарочных карт: официальный ЦБ, затем рынок.
+const USD_PRIORITY = ['cbr-usd', 'kraken+cbr', 'coingecko'];
 
 async function fetchOfficial() {
   const errors = [];
@@ -165,18 +165,37 @@ async function fetchOfficial() {
     sources.push(name.split('-')[0]);
     break;
   }
+  // USD (для подарочных карт): ЦБ РФ, затем рыночные оценки доллара.
+  for (const name of USD_PRIORITY) {
+    const part = parts[name];
+    if (!part) continue;
+    // CoinGecko отдаёт только tether — он же лучшая рыночная оценка доллара.
+    const usd = part.usd !== undefined ? part.usd : name === 'coingecko' ? part.usdt : undefined;
+    if (usd === undefined) continue;
+    result.usd = usd;
+    sources.push(name.split('-')[0]);
+    break;
+  }
 
-  if (result.btc === undefined || result.ltc === undefined || result.usdt === undefined) {
+  if (result.btc === undefined || result.ltc === undefined || result.usdt === undefined || result.usd === undefined) {
     throw new Error(errors.join('; ') || 'нет источников курса');
   }
   result.source = [...new Set(sources)].join('+') || 'manual';
   return result;
 }
 
+// Наценка (клиент покупает): итоговый курс выше официального.
 const applyFee = (base, fee, decimals = 0) => {
   const v = base * (1 + fee / 100);
   const mul = 10 ** decimals;
   return Math.max(decimals ? 1 / mul : 1, Math.round(v * mul) / mul);
+};
+
+// Скидка (клиент продаёт нам): итоговый курс ниже официального.
+const applyDiscount = (base, percent, decimals = 2) => {
+  const mul = 10 ** decimals;
+  const v = base * (1 - (Number(percent) || 0) / 100);
+  return Math.max(1 / mul, Math.round(v * mul) / mul);
 };
 
 function applyRates(official) {
@@ -190,6 +209,9 @@ function applyRates(official) {
     s.rateLTC = applyFee(official.ltc, fee);
     s.rateUSDTTRC20 = applyFee(official.usdt, Number(s.feePercentUSDTTRC20) || 0, 2);
     s.rateUSDTERC20 = applyFee(official.usdt, Number(s.feePercentUSDTERC20) || 0, 2);
+    s.baseRateGOOGLEUSD = Math.round(official.usd * 100) / 100;
+    // Клиент отдаёт карту, поэтому мы платим меньше официального курса: скидка = комиссия.
+    s.rateGOOGLEUSD = applyDiscount(official.usd, Number(s.feePercentGOOGLEUSD) || 0, 2);
     s.rateUpdatedAt = Date.now();
     s.rateSource = official.source;
     return s;
@@ -206,6 +228,9 @@ function recomputeWithFee() {
     if (s.baseRateUSDT) {
       s.rateUSDTTRC20 = applyFee(s.baseRateUSDT, Number(s.feePercentUSDTTRC20) || 0, 2);
       s.rateUSDTERC20 = applyFee(s.baseRateUSDT, Number(s.feePercentUSDTERC20) || 0, 2);
+    }
+    if (s.baseRateGOOGLEUSD) {
+      s.rateGOOGLEUSD = applyDiscount(s.baseRateGOOGLEUSD, Number(s.feePercentGOOGLEUSD) || 0, 2);
     }
     return s;
   });
@@ -234,4 +259,11 @@ function startRates() {
   return timer;
 }
 
-module.exports = { startRates, refreshRates, recomputeWithFee, applyFee, fetchOfficial };
+module.exports = {
+  startRates,
+  refreshRates,
+  recomputeWithFee,
+  applyFee,
+  applyDiscount,
+  fetchOfficial,
+};

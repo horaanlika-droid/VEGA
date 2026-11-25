@@ -116,6 +116,7 @@ body {
 .coin-ic.btc { background: linear-gradient(140deg, #ffab3d, #f7931a); color: #fff; }
 .coin-ic.ltc { background: linear-gradient(140deg, #d7dee8, #8fa1b8); color: #fff; }
 .coin-ic.usdt { background: linear-gradient(140deg, #3fe0b0, #009393); color: #fff; }
+.coin-ic.google { background: linear-gradient(140deg, #4a8cff, #ff4d67); color: #fff; font-size: 14px; }
 
 .f-sep { display: flex; align-items: center; justify-content: center; padding: 9px 0; }
 .f-sep .arr {
@@ -128,6 +129,14 @@ body {
 .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; background: rgba(2, 10, 20, 0.55); border: 1px solid var(--line); border-radius: 15px; padding: 5px; }
 /* Четыре направления (BTC / LTC / USDT TRC20 / USDT ERC20) — сетка 2×2. */
 .seg.seg-3, .seg.seg-4 { grid-template-columns: 1fr 1fr; }
+/* Переключатель «купить / продать карту» */
+.modes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px; padding: 5px; border-radius: 15px; background: rgba(2,10,20,.55); border: 1px solid var(--line); }
+.modes button { border: none; border-radius: 11px; padding: 11px 6px; background: transparent; color: var(--mut); font: 800 12.5px 'Manrope', sans-serif; cursor: pointer; transition: all .18s; }
+.modes button.on { background: linear-gradient(92deg, rgba(0,200,255,.9), rgba(23,233,192,.9)); color: #032730; box-shadow: 0 4px 16px rgba(23,233,192,.28); }
+/* Быстрые номиналы подарочных карт */
+.seg.gift-nom { grid-template-columns: repeat(4, 1fr); }
+.seg.gift-nom button { font-size: 12.5px; padding: 9px 0; }
+input[readonly] { color: #9fe8d6 !important; }
 .seg button { font-size: 12.5px; letter-spacing: .01em; gap: 5px; padding: 10px 4px; }
 .seg button .sc-sym { font-weight: 800; margin-right: 3px; }
 .seg button .sc-sym.btc { color: #f7931a; }
@@ -255,6 +264,7 @@ body {
 .h-ic.btc { background: rgba(247, 147, 26, 0.15); color: #f7931a; border: 1px solid rgba(247, 147, 26, 0.3); }
 .h-ic.ltc { background: rgba(190, 205, 225, 0.12); color: #c3d2e6; border: 1px solid rgba(190, 205, 225, 0.28); }
 .h-ic.usdt { background: rgba(38, 161, 123, 0.15); color: #35d6a4; border: 1px solid rgba(38, 161, 123, 0.32); position: relative; }
+.h-ic.google { background: rgba(74, 140, 255, 0.14); color: #8db8ff; border: 1px solid rgba(74, 140, 255, 0.3); position: relative; }
 .h-ic small { position: absolute; right: -3px; bottom: -3px; font-size: 6.5px; font-weight: 800; letter-spacing: .02em; padding: 1px 3px; border-radius: 5px; background: #08202b; border: 1px solid rgba(38, 161, 123, 0.45); color: #6fe6c4; }
 .h-main { flex: 1; min-width: 0; }
 .h-top { display: flex; justify-content: space-between; gap: 8px; font-size: 13.5px; font-weight: 800; }
