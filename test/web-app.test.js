@@ -310,6 +310,17 @@ test('asset picker opens the exchange: sheets list assets, back returns to picke
   a.document.querySelector('[data-group="gift"]').click();
   keys = [...a.document.querySelectorAll('#sheetList .sheet-row')].map((b) => b.dataset.key);
   assert.deepEqual(keys, ['GOOGLE_USD', 'ITUNES_USD', 'XBOX_USD', 'APPLE_STORE_USD']);
+  const brandLabels = {
+    GOOGLE_USD: 'Google Gift Card',
+    ITUNES_USD: 'iTunes Gift Card',
+    XBOX_USD: 'Xbox Gift Card',
+    APPLE_STORE_USD: 'Apple Store Gift Card',
+  };
+  for (const [key, label] of Object.entries(brandLabels)) {
+    const logo = a.document.querySelector(`.sheet-row[data-key="${key}"] .coin-ic svg`);
+    assert.ok(logo, `${label} has a vector logo`);
+    assert.equal(logo.getAttribute('aria-label'), label);
+  }
   assert.match(a.document.querySelector('#sheetFoot').textContent, /карты США в USD/);
   a.document.querySelector('#sheetClose').click();
   // Выбор карты открывает форму карты.
@@ -717,10 +728,9 @@ test('Админка в приложении: вкладки, переключе
   // Вкладка «Карты»: превью и сохранение.
   a.document.querySelector('#admTabs .adm-tab[data-tab="gift"]').click();
   assert.equal(a.document.querySelector('#admGiftRate'), null, 'поля ручного курса больше нет');
-  assert.deepEqual(
-    [...a.document.querySelectorAll('#admGiftDirs .adm-toggle')].map((b) => b.dataset.dir),
-    ['GOOGLE_USD', 'ITUNES_USD', 'XBOX_USD', 'APPLE_STORE_USD']
-  );
+  const adminGiftToggles = [...a.document.querySelectorAll('#admGiftDirs .adm-toggle')];
+  assert.deepEqual(adminGiftToggles.map((b) => b.dataset.dir), ['GOOGLE_USD', 'ITUNES_USD', 'XBOX_USD', 'APPLE_STORE_USD']);
+  assert.ok(adminGiftToggles.every((b) => b.querySelector('.adm-coin svg')), 'админка тоже показывает векторные логотипы брендов');
   a.document.querySelector('#admGiftFee').value = '10';
   a.document.querySelector('#admGiftFee').dispatchEvent(new a.window.Event('input', { bubbles: true }));
   assert.match(a.document.querySelector('#admGiftPreview').textContent, /0\.00010227 BTC/);
