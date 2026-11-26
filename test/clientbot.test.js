@@ -147,11 +147,13 @@ test('gift flow end-to-end: menu → exchange → Google Gift Card → paid → 
   assert.ok(String(screen.text).includes('Правила передачи карты'), 'первым открывается диалог с правилами');
   assert.ok(String(screen.text).includes('Минимальный цифровой след'), 'цифровой след упомянут в карточке подарка');
   assert.ok(String(screen.text).includes('Ничего не отправляйте'));
+  assert.doesNotMatch(String(screen.text), /комисси/i, 'клиенту не показываем комиссию');
 
   // Правила → номинал. Код при создании заявки НЕ спрашивают.
   await click(client, 'c:giftnom:GOOGLE_USD');
   screen = lastCall('editMessageText');
   assert.ok(markupCallbacks(screen).includes('c:units:GOOGLE_USD:10'));
+  assert.doesNotMatch(String(screen.text), /комисси/i, 'курс показа не раскрывает комиссию');
   await click(client, 'c:units:GOOGLE_USD:10');
   const askWallet = lastCall('editMessageText');
   assert.match(String(askWallet.text), /кошельк/i, 'после номинала спрашивают только кошелёк');

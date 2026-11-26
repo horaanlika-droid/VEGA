@@ -507,6 +507,7 @@ test('iTunes card rules are confirmed before a BTC order is created with its bra
   assert.ok(!rules.classList.contains('hidden'));
   assert.match(rules.textContent, /iTunes Gift Card/);
   assert.match(rules.textContent, /региона США/);
+  assert.doesNotMatch(rules.textContent, /комисси/i, 'правила карты не раскрывают комиссию клиенту');
   assert.ok(!a.calls.some((c) => c.pathname === '/api/orders'));
 
   a.document.querySelector('#giftRulesConfirm').click();
@@ -601,6 +602,7 @@ test('gift form explains US-region cards in USD and the 1-hour deadline', async 
   assert.match(text, /США/);
   assert.match(text, /USD/);
   assert.match(text, /1 час/);
+  assert.doesNotMatch(text, /комисси/i, 'форма карты не раскрывает комиссию клиенту');
 });
 
 test('Apple Store gift order with a legacy code shows BTC payout and checking stage', async (t) => {

@@ -192,7 +192,7 @@ function giftRules(ctx, pair) {
     `1. Карта — <b>${esc(label)}</b> для региона <b>США</b>, в валюте <b>USD</b>, с полным неизрасходованным балансом. Карты других регионов и валют не принимаем.\n` +
     `2. Сначала создаётся заявка, затем <b>подключается оператор</b>. <b>Ничего не отправляйте и никому не сообщайте код до его команды.</b>\n` +
     `3. Код карты вы отправляете здесь (или в приложении) <b>только после подключения оператора</b>. Он проверит карту (обычно 5–15 минут).\n` +
-    `4. Выплата — в <b>BTC</b> на ваш Bitcoin-кошелёк. Сумма рассчитывается по текущему курсу BTC/USD и комиссии обменника.\n` +
+    `4. Выплата — в <b>BTC</b> на ваш Bitcoin-кошелёк. Сумма определяется по актуальному курсу BTC/USD.\n` +
     `5. Поддержка никогда не просит код и деньги вне заявки. Не сообщайте код никому, кроме оператора в рамках заявки.\n` +
     `6. На сделку даётся <b>1 час</b> с момента создания заявки. Если карта недействительна — заявка отклоняется без выплаты.\n\n` +
     GIFT_PRIVACY,
@@ -202,7 +202,6 @@ function giftRules(ctx, pair) {
 function giftIntro(ctx, pair) {
   const s = store.get().settings;
   const rate = currencies.rateOf(s, pair.currency, pair.network);
-  const fee = Number(s.giftPercent) || 0;
   clientFlows.set(uidOf(ctx), { type: 'gift_select', key: pair.key });
   const kb = new InlineKeyboard()
     .text('$10', `c:units:${pair.key}:10`).text('$20', `c:units:${pair.key}:20`).text('$50', `c:units:${pair.key}:50`).text('$100', `c:units:${pair.key}:100`).row()
@@ -211,7 +210,7 @@ function giftIntro(ctx, pair) {
   return show(ctx,
     `${esc(pair.label)} → BTC\n\n` +
     `Вы отдаёте код карты ${esc(pair.label)} номинала в <b>USD</b>, мы выплачиваем BTC на ваш Bitcoin-кошелёк.\n\n` +
-    `💱 Курс: <b>1 $ = ${esc(fmtCrypto(rate, 'BTC', 8))}</b> (комиссия обменника: ${fee}%, курс BTC/USD обновляется автоматически)\n` +
+    `💱 Курс выплаты: <b>1 $ = ${esc(fmtCrypto(rate, 'BTC', 8))}</b>. Курс BTC/USD обновляется автоматически.\n` +
     `⏱ На сделку — 1 час с момента создания.\n` +
     `✅ Принимаем только карты региона США в долларах (USD).\n\n` +
     GIFT_PRIVACY + `\n\n` +
