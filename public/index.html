@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#02070f" />
-  <title>VEGA — BTC · LTC · USDT Exchange</title>
+  <title>VEGA — BTC · LTC · USDT · Gift Cards</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -18,7 +18,7 @@
     <header class="hdr">
       <div class="hdr-star">✦</div>
       <div class="hdr-logo">VEGA</div>
-      <div class="hdr-sub">OFFICIAL · BTC · LTC · USDT EXCHANGE</div>
+      <div class="hdr-sub">OFFICIAL · BTC · LTC · USDT · GIFT CARDS</div>
       <div class="hdr-status" id="hdrStatus"></div>
     </header>
 
@@ -63,10 +63,10 @@
         </button>
       </div>
       <div class="rules-body">
-        <div class="rules-item"><b>1.</b> Карта — <b>Google Gift Card</b> в валюте <b>USD ($)</b> с полным, неизрасходованным балансом номинала. Рубли и другие валюты не принимаем.</div>
+        <div class="rules-item"><b>1.</b> Карта — <b id="giftRulesBrand">Google Gift Card</b> региона США, в валюте <b>USD ($)</b>, с полным неизрасходованным балансом. Рубли и карты других регионов/валют не принимаем.</div>
         <div class="rules-item"><b>2.</b> Сначала создаётся заявка, затем <b>подключается оператор</b> — дождитесь его сигнала. <b>Ничего не отправляйте и никому не сообщайте код до команды оператора.</b></div>
         <div class="rules-item"><b>3.</b> Код карты вы вводите в приложении <b>только после подключения оператора</b>. После отправки оператор проверяет карту (обычно 5–15 минут).</div>
-        <div class="rules-item"><b>4.</b> Выплата — в <b>USDT</b> на указанный вами кошелёк (сеть определяется по адресу: T… → TRC20, 0x… → ERC20).</div>
+        <div class="rules-item"><b>4.</b> Выплата — в <b>BTC</b> на указанный вами Bitcoin-кошелёк. Сумма рассчитывается по текущему курсу BTC/USD с учётом комиссии обменника.</div>
         <div class="rules-item"><b>5.</b> Поддержка VEGA никогда не просит код и деньги вне заявки. Не сообщайте код никому, кроме оператора в рамках заявки.</div>
         <div class="rules-item"><b>6.</b> На сделку даётся <b>1 час</b> с момента создания заявки. Если карта окажется недействительной, заявка отклоняется без выплаты.</div>
       </div>
@@ -108,11 +108,11 @@
       </div>
 
       <div class="adm-pane hidden" data-pane="gift">
-        <div class="adm-note">Google Gift Card → USDT. Курс считается из комиссии и не задаётся вручную — выплату по каждой заявке оператор подтверждает сам после проверки карты.</div>
+        <div class="adm-note">Google, iTunes, Xbox и Apple Store (карты США в USD) → BTC. Выплата пересчитывается по текущему BTC/USD и общей комиссии; оператор подтверждает её после проверки карты.</div>
         <div class="adm-toggles" id="admGiftDirs"></div>
-        <label class="f-label" for="admGiftFee" style="margin-top:14px"><span>Комиссия карты, % от номинала</span></label>
+        <label class="f-label" for="admGiftFee" style="margin-top:14px"><span>Общая комиссия карт, % от BTC-эквивалента</span></label>
         <div class="f-box"><input id="admGiftFee" type="number" inputmode="decimal" min="0" max="50" step="1" placeholder="0"></div>
-        <div class="adm-preview" id="admGiftPreview">Карта $10 → 10 USDT</div>
+        <div class="adm-preview" id="admGiftPreview">Карта $10 → BTC</div>
         <div class="f-err" id="admGiftErr"></div>
         <button class="btn btn-primary" style="margin-top:10px" id="admGiftSave"><span>Сохранить карты</span></button>
       </div>

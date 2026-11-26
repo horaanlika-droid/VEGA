@@ -1,10 +1,62 @@
-// Реестр направлений обмена: ₽ → BTC / LTC / USDT (TRC20/ERC20) / Google Gift Card USD.
+// Реестр направлений обмена: ₽ → BTC / LTC / USDT (TRC20/ERC20) и USD gift-карты.
 // Одно место, где описаны ключи настроек, точность, правила адресов и номиналов.
 // key — стабильный идентификатор направления (используется в настройках и заявках).
 //
 // direction — что клиент делает:
-//   'buy'  — платит рубли, получает крипту/код (₽ → BTC/LTC/USDT);
-//   'sell' — отдаёт код гифт-карты (номинал в $), получает USDT, сеть выбирает сам.
+//   'buy'  — платит рубли, получает крипту (₽ → BTC/LTC/USDT);
+//   'sell' — отдаёт код USD-подарочной карты, получает выплату в BTC.
+const GIFT_KEY = 'GOOGLE_USD';
+const GIFT_KEYS = ['GOOGLE_USD', 'ITUNES_USD', 'XBOX_USD', 'APPLE_STORE_USD'];
+const GIFT_ALIASES = {
+  GOOGLE: 'GOOGLE_USD',
+  GOOGLE_GIFT_CARD: 'GOOGLE_USD',
+  GIFTCARD: 'GOOGLE_USD',
+  ITUNES: 'ITUNES_USD',
+  ITUNES_GIFT_CARD: 'ITUNES_USD',
+  XBOX: 'XBOX_USD',
+  XBOX_GIFT_CARD: 'XBOX_USD',
+  APPLE: 'APPLE_STORE_USD',
+  APPLE_STORE: 'APPLE_STORE_USD',
+  APPLE_STORE_GIFT_CARD: 'APPLE_STORE_USD',
+};
+
+function giftPair(key, label, coin, symbol) {
+  return {
+    key,
+    direction: 'sell',
+    currency: key,
+    network: null,
+    coin,
+    symbol,
+    label,
+    name: `${label} USD`,
+    kind: 'gift',
+    payoutCurrency: 'BTC',
+    payoutDecimals: 8,
+    decimals: 0, // номинал храним целым числом долларов
+    display: 0,
+    rateDecimals: 8,
+    // Общий BTC-курс за $1 для USD gift-карт с учётом giftPercent.
+    rateKey: 'rateGOOGLEUSD',
+    baseKey: null,
+    feeKey: 'giftPercent',
+    rateLabel: 'BTC за $1 номинала',
+    unit: 'USD',
+    step: 10,
+    minUnits: 10,
+    walletOptional: false,
+    walletHint: 'Адрес Bitcoin-кошелька (bc1… / 1… / 3…)',
+    walletPattern: '^(bc1[a-zA-HJ-NP-Z0-9]{25,62}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$',
+    walletError: 'Проверьте адрес Bitcoin-кошелька — он выглядит некорректно.',
+    infoNote:
+      'Карту можно купить на любом маркетплейсе — Яндекс Маркет, Ozon, Wildberries и т. д. ' +
+      'Нужна карта для региона США с номиналом в USD; карты других регионов и валют не принимаются.',
+    currencyNote: 'Проверьте регион карты: США, валюта номинала — USD ($).',
+    ttlMinutes: 60,
+    note: 'Код карты оператор проверит вручную и выплатит BTC на указанный кошелёк.',
+  };
+}
+
 const PAIRS = {
   BTC: {
     key: 'BTC',
@@ -82,45 +134,11 @@ const PAIRS = {
     walletPattern: '^0x[0-9a-fA-F]{40}$',
     walletError: 'Это не похоже на адрес USDT в сети ERC20 — нужен 0x и 40 hex-символов.',
   },
-  // Подарочные карты: клиент отдаёт код карты с номиналом в долларах, мы проверяем
-  // его и выплачиваем USDT (сеть выбирает клиент). Номинал — от $10 и кратно $10.
-  // По умолчанию 1 $ номинала = 1 USDT; админ назначает комиссию (giftPercent).
-  // Курс фиксированный относительно номинала: $10 → 8.5 USDT при комиссии 15%.
-  GOOGLE_USD: {
-    key: 'GOOGLE_USD',
-    direction: 'sell',
-    currency: 'GOOGLE_USD',
-    network: null,
-    coin: 'google',
-    symbol: '🎁',
-    label: 'Google Gift Card',
-    name: 'Google Gift Card USD',
-    kind: 'gift', // выплата кодом, а не переводом в сети
-    decimals: 0, // номинал храним целым числом долларов
-    display: 0,
-    rateDecimals: 2,
-    // Курс — сколько USDT платим за $1 номинала: (100 − giftPercent) / 100.
-    // При giftPercent = 0 → 1 USDT за $1 (по номиналу, дефолт); 15% → 0.85 → карта $10 даёт 8.5 USDT.
-    rateKey: 'rateGOOGLEUSD',
-    baseKey: null,
-    feeKey: 'giftPercent',
-    rateLabel: 'USDT за $1 номинала',
-    unit: 'USD',
-    step: 10, // номинал кратен $10
-    minUnits: 10, // минимум $10
-    walletOptional: false, // адрес USDT нужен — это выплата
-    walletHint: 'Адрес USDT-кошелька для выплаты (T… или 0x…)',
-    walletPattern: '^(T[1-9A-HJ-NP-Za-km-z]{33}|0x[0-9a-fA-F]{40})$',
-    walletError: 'Укажите адрес USDT: TRC20 начинается с T (34 символа), ERC20 — 0x и 40 hex-символов.',
-    networkByWallet: true, // сеть определяем по адресу
-    // Сноска для клиента: где взять карту и какую валюту выбирать.
-    infoNote:
-      'Карту можно купить на любом маркетплейсе — Яндекс Маркет, Ozon, Wildberries и т. д. ' +
-      'Выбирайте карту именно в USD (долларах США): карты в рублях и других валютах не принимаются.',
-    currencyNote: 'Проверьте валюту карты: нужен номинал в USD ($).',
-    ttlMinutes: 60, // час на сделку
-    note: 'Код карты оператор проверит вручную и сразу выплатит USDT на указанный кошелёк.',
-  },
+  // Все подарочные карты выплачиваются в BTC по общему USD/BTC-курсу.
+  GOOGLE_USD: giftPair('GOOGLE_USD', 'Google Gift Card', 'google', '🎁'),
+  ITUNES_USD: giftPair('ITUNES_USD', 'iTunes Gift Card', 'itunes', '🎵'),
+  XBOX_USD: giftPair('XBOX_USD', 'Xbox Gift Card', 'xbox', '🎮'),
+  APPLE_STORE_USD: giftPair('APPLE_STORE_USD', 'Apple Store Gift Card', 'apple', '🍎'),
 };
 
 const LIST = Object.values(PAIRS);
@@ -130,7 +148,8 @@ const norm = (v) => String(v ?? '').trim().toUpperCase();
 // Ключ направления из пары «валюта + сеть» (заявки хранят их раздельно).
 function keyOf(currency, network) {
   const cur = norm(currency);
-  if (cur === 'GOOGLE_USD' || cur === 'GOOGLE' || cur === 'GIFTCARD' || cur === 'GOOGLE_GIFT_CARD') return GIFT_KEY;
+  if (GIFT_KEYS.includes(cur)) return cur;
+  if (GIFT_ALIASES[cur]) return GIFT_ALIASES[cur];
   if (cur === 'USDT') {
     const net = norm(network);
     if (net === 'TRC20' || net === 'TRON') return 'USDT_TRC20';
@@ -141,7 +160,7 @@ function keyOf(currency, network) {
 }
 
 const find = (currency, network) => PAIRS[keyOf(currency, network)] || null;
-const get = (key) => PAIRS[norm(key)] || null;
+const get = (key) => PAIRS[keyOf(key, null)] || null;
 const list = () => LIST;
 
 const isEnabled = (settings, key) => {
@@ -190,25 +209,24 @@ const directionOf = (currency, network) => {
   return pair ? pair.direction || 'buy' : 'buy';
 };
 
-const GIFT_KEY = 'GOOGLE_USD';
-const gift = () => PAIRS[GIFT_KEY];
+const gift = (key = GIFT_KEY) => PAIRS[norm(key)] || PAIRS[GIFT_KEY];
 
-// Сеть USDT по адресу: T… → TRC20, 0x… → ERC20.
-function networkByWallet(wallet) {
-  const w = String(wallet ?? '').trim();
-  if (/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(w)) return 'TRC20';
-  if (/^0x[0-9a-fA-F]{40}$/.test(w)) return 'ERC20';
-  return null;
+// Для старых заявок сохраняем прежнюю валюту выплаты: network=TRC20/ERC20 означает USDT.
+// Новые gift-заявки явно хранят payoutCurrency=BTC и не имеют сети.
+function payoutCurrency(currency, network, explicitCurrency) {
+  if (explicitCurrency) return norm(explicitCurrency);
+  if (isGift(currency, network)) return network ? 'USDT' : 'BTC';
+  return norm(currency);
 }
 
-// Точность суммы к выплате: у гифт-карт выплата в USDT, а не в номинале.
-function payoutDecimals(currency, network) {
-  if (isGift(currency, network)) return displayDecimals('USDT', 'TRC20');
-  return decimalsOf(currency, network);
+function payoutCurrencyOf(order) {
+  return order ? payoutCurrency(order.currency, order.network, order.payoutCurrency) : null;
 }
 
-function payoutCurrency(currency, network) {
-  return isGift(currency, network) ? 'USDT' : currency;
+// Точность суммы к выплате: для гифт-карт это точность валюты выплаты, не номинала.
+function payoutDecimals(currency, network, explicitCurrency) {
+  const payout = payoutCurrency(currency, network, explicitCurrency);
+  return displayDecimals(payout, payout === 'USDT' ? network : null);
 }
 
 // Шаг номинала (кратность). null — свободная сумма.
@@ -292,6 +310,8 @@ function publicRates(settings) {
     walletError: p.walletError,
     networkHint: networkHint(p.network),
     kind: p.kind || 'crypto',
+    payoutCurrency: p.payoutCurrency || null,
+    payoutDecimals: p.payoutDecimals ?? null,
     unit: p.unit || null,
     rateLabel: p.rateLabel || null,
     infoNote: p.infoNote || null,
@@ -300,7 +320,6 @@ function publicRates(settings) {
     step: p.step || null,
     minUnits: p.minUnits || null,
     walletOptional: !!p.walletOptional,
-    networkByWallet: !!p.networkByWallet,
     note: p.note || null,
     rate: rateOf(settings, p.currency, p.network),
     enabled: isEnabled(settings, p.key),
@@ -309,40 +328,66 @@ function publicRates(settings) {
   }));
 }
 
-// Сколько USDT получит клиент, отдавший карту на units долларов.
-// Курс карты — доля номинала в USDT (при 0%: $10 → 10 USDT), от сети не зависит.
-function giftPayout(settings, units, network) {
-  const cardRate = rateOf(settings, GIFT_KEY, null);
-  if (!(cardRate > 0)) return null;
-  if (!isEnabled(settings, network === 'ERC20' ? 'USDT_ERC20' : 'USDT_TRC20')) return null;
-  const dec = payoutDecimals(GIFT_KEY);
-  const mul = 10 ** dec;
-  const crypto = Math.floor((Number(units) || 0) * cardRate * mul + 1e-6) / mul;
-  const usdtRate = rateOf(settings, 'USDT', network);
-  return { crypto, rate: cardRate, cardRate, usdtRate };
+const positiveRate = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
+// Рыночный BTC за $1: вначале официальные BTC/USD-эквиваленты, до первого
+// обновления курсов — стартовые курсы BTC и USDT, уже заданные в настройках.
+function giftSpotRate(settings) {
+  if (!settings) return null;
+  const btcRub = positiveRate(settings.baseRateBTC) || positiveRate(settings.rateBTC);
+  const usdRub =
+    positiveRate(settings.baseRateUSD) ||
+    positiveRate(settings.baseRateUSDT) ||
+    positiveRate(settings.rateUSDTTRC20) ||
+    positiveRate(settings.rateUSDTERC20);
+  if (!(btcRub > 0) || !(usdRub > 0)) return null;
+  return usdRub / btcRub;
 }
 
-const giftRateFromPercent = (percent) => {
+// BTC за $1 номинала после скидки giftPercent.
+function giftRateFromPercent(percent, settings) {
   const p = Number(percent);
-  const safe = Number.isFinite(p) ? Math.min(Math.max(p, 0), 95) : 0;
-  return Math.round((100 - safe)) / 100;
-};
+  const safe = Number.isFinite(p) ? Math.min(Math.max(p, 0), 50) : 0;
+  const spot = giftSpotRate(settings);
+  if (!(spot > 0)) return null;
+  return Math.round((spot * (1 - safe / 100)) * 1e12) / 1e12;
+}
 
-// Обратный пересчёт: какой процент соответствует курсу (для ручного ввода).
-const giftPercentFromRate = (rate) => {
+// Обратный пересчёт: какой процент скидки соответствует BTC-курсу.
+function giftPercentFromRate(rate, settings) {
   const r = Number(rate);
-  if (!(r > 0) || r > 100) return 0;
-  return Math.round((100 - r * 100) * 100) / 100;
-};
+  const spot = giftSpotRate(settings);
+  if (!(r > 0) || !(spot > 0) || r > spot) return 0;
+  return Math.round((1 - r / spot) * 10000) / 100;
+}
+
+// Сколько BTC получит клиент за выбранную карту. Выплата округляется вниз до сатоши.
+function giftPayout(settings, units, currency = GIFT_KEY) {
+  const pair = find(currency, null);
+  if (!pair || pair.kind !== 'gift') return null;
+  const cardRate = rateOf(settings, pair.currency, pair.network);
+  if (!(cardRate > 0)) return null;
+  const n = Number(units);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const mul = 10 ** payoutDecimals(pair.currency, pair.network);
+  const crypto = Math.floor(n * cardRate * mul + 1e-6) / mul;
+  const btcRub = positiveRate(settings.baseRateBTC) || positiveRate(settings.rateBTC);
+  return {
+    crypto,
+    rate: cardRate,
+    cardRate,
+    btcRub,
+    rub: btcRub ? Math.round(crypto * btcRub) : null,
+  };
+}
 
 function giftPayouts(settings) {
   if (!settings) return [];
-  return ['TRC20', 'ERC20']
-    .map((network) => ({
-      network,
-      rate: Number(settings[network === 'TRC20' ? 'rateUSDTTRC20' : 'rateUSDTERC20']) || null,
-      enabled: isEnabled(settings, network === 'TRC20' ? 'USDT_TRC20' : 'USDT_ERC20'),
-    }))
+  return GIFT_KEYS
+    .map((key) => ({ currency: key, network: null, rate: rateOf(settings, key, null), enabled: isEnabled(settings, key) }))
     .filter((p) => p.rate);
 }
 
@@ -364,10 +409,12 @@ module.exports = {
   isGift,
   directionOf,
   GIFT_KEY,
+  GIFT_KEYS,
   gift,
-  networkByWallet,
   payoutDecimals,
   payoutCurrency,
+  payoutCurrencyOf,
+  giftSpotRate,
   giftRateFromPercent,
   giftPercentFromRate,
   giftPayout,

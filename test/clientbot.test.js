@@ -149,22 +149,23 @@ test('gift flow end-to-end: menu → exchange → Google Gift Card → paid → 
   assert.ok(String(screen.text).includes('Ничего не отправляйте'));
 
   // Правила → номинал. Код при создании заявки НЕ спрашивают.
-  await click(client, 'c:giftnom');
+  await click(client, 'c:giftnom:GOOGLE_USD');
   screen = lastCall('editMessageText');
-  assert.ok(markupCallbacks(screen).includes('c:units:10'));
-  await click(client, 'c:units:10');
+  assert.ok(markupCallbacks(screen).includes('c:units:GOOGLE_USD:10'));
+  await click(client, 'c:units:GOOGLE_USD:10');
   const askWallet = lastCall('editMessageText');
   assert.match(String(askWallet.text), /кошельк/i, 'после номинала спрашивают только кошелёк');
   assert.ok(!String(askWallet.text).includes('Код карты'), 'код до создания заявки не запрашивают');
-  // TRC20-адрес (T + 33 символа base58).
-  await text(client, 'T' + 'a'.repeat(33));
+  // Bitcoin-адрес.
+  await text(client, 'bc1' + 'a'.repeat(30));
   const created = store.get().orders.find((o) => String(o.userId) === String(client));
   assert.ok(created, 'заявка создана');
   assert.equal(created.direction, 'sell');
   assert.equal(created.units, 10);
   assert.equal(created.currency, 'GOOGLE_USD');
-  assert.equal(created.crypto, 10, 'комиссия 0% → 1 USDT за 1 $');
-  assert.equal(created.network, 'TRC20');
+  assert.equal(created.payoutCurrency, 'BTC');
+  assert.equal(created.crypto, Math.floor(10 * created.rate * 1e8 + 1e-6) / 1e8, 'BTC-выплата рассчитывается по общему курсу');
+  assert.equal(created.network, null);
   assert.equal(created.giftCode ?? null, null, 'заявка без кода — код только после подключения оператора');
   assert.equal(created.status, 'new');
 
@@ -185,6 +186,35 @@ test('gift flow end-to-end: menu → exchange → Google Gift Card → paid → 
   assert.ok(calls.some((c) => c.method === 'sendMessage' && String(c.chat_id) === '111' && String(c.text).includes(`#${created.id}`)));
 });
 
+test('iTunes, Xbox and Apple Store each create a BTC gift order with the selected brand', async () => {
+  const products = [
+    ['ITUNES_USD', 'iTunes Gift Card', 1101],
+    ['XBOX_USD', 'Xbox Gift Card', 1102],
+    ['APPLE_STORE_USD', 'Apple Store Gift Card', 1103],
+  ];
+  for (const [key, label, client] of products) {
+    await text(client, '/start');
+    await click(client, 'c:exchange');
+    await click(client, `c:buy:${key}`);
+    const rules = lastCall('editMessageText');
+    assert.ok(String(rules.text).includes(label));
+    await click(client, `c:giftnom:${key}`);
+    const nominal = lastCall('editMessageText');
+    assert.ok(String(nominal.text).includes(label));
+    await click(client, `c:units:${key}:10`);
+    await text(client, 'bc1' + 'a'.repeat(30));
+    const order = store.get().orders.find((o) => String(o.userId) === String(client));
+    assert.ok(order, `${label} order created`);
+    assert.equal(order.currency, key);
+    assert.equal(order.payoutCurrency, 'BTC');
+    assert.equal(order.network, null);
+    assert.equal(order.units, 10);
+    assert.equal(order.crypto, Math.floor(10 * order.rate * 1e8 + 1e-6) / 1e8);
+    const adminCard = calls.find((c) => c.method === 'sendMessage' && String(c.chat_id) === '111' && String(c.text).includes(`#${order.id}`));
+    assert.ok(adminCard && String(adminCard.text).includes(label), `operator sees ${label}`);
+  }
+});
+
 test('expired gift link and unknown order do not crash the client', async () => {
   await text(1002, '/start');
   await click(1002, 'c:order:999999');
@@ -199,7 +229,7 @@ test('widget send is attempted when WIDGETS=1 and falls back to text on Telegram
   await click(client, 'c:buy:GOOGLE_USD');
   await click(client, 'c:giftnom');
   await click(client, 'c:units:10');
-  await text(client, 'T' + 'b'.repeat(33));
+  await text(client, 'bc1' + 'b'.repeat(30));
   const order = store.get().orders.find((o) => String(o.userId) === String(client));
   assert.ok(order);
 
@@ -244,7 +274,7 @@ test('widget_query is answered and message state refreshed via editMessageWidget
   await click(client, 'c:buy:GOOGLE_USD');
   await click(client, 'c:giftnom');
   await click(client, 'c:units:10');
-  await text(client, 'T' + 'c'.repeat(33));
+  await text(client, 'bc1' + 'c'.repeat(30));
   const order = store.get().orders.find((o) => String(o.userId) === String(client));
   assert.ok(order);
   // «Я оплатил» в виджете работает для заявки с кодом (совместимость со старыми клиентами):
@@ -289,7 +319,7 @@ test('widget «paid» is rejected for someone else’s order', async () => {
   await click(owner, 'c:buy:GOOGLE_USD');
   await click(owner, 'c:giftnom');
   await click(owner, 'c:units:10');
-  await text(owner, 'T' + 'd'.repeat(33));
+  await text(owner, 'bc1' + 'd'.repeat(30));
   const order = store.get().orders.find((o) => String(o.userId) === String(owner));
 
   const res = await (async () => {

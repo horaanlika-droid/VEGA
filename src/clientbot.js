@@ -16,9 +16,13 @@ const clientFlows = new Map(); // userId -> FSM state
 const isPrivate = (ctx) => ctx.chat?.type === 'private' && ctx.from;
 const uidOf = (ctx) => String(ctx.from.id);
 const isGiftOrder = (o) => o && (o.direction === 'sell' || currencies.isGift(o.currency, o.network));
+const giftLabel = (o) => currencies.label(o.currency, o.network);
 const giftUnits = (o) => Number(o.units) || 0;
-const payoutOf = (o, amount = o.crypto) =>
-  `${fmtCrypto(amount, 'USDT', 2)} (${o.network || 'USDT'})`;
+const payoutOf = (o, amount = o.crypto) => {
+  const currency = currencies.payoutCurrencyOf(o);
+  const network = currency === 'USDT' && o.network ? ` (${o.network})` : '';
+  return `${fmtCrypto(amount, currency, currencies.displayDecimals(currency, currency === 'USDT' ? o.network : null))}${network}`;
+};
 
 /* ---------- контент ---------- */
 
@@ -26,7 +30,7 @@ const payoutOf = (o, amount = o.crypto) =>
 const GIFT_PRIVACY =
   '🛡 <b>Минимальный цифровой след</b>\n' +
   '• Карту можно купить за наличные — она ничем не связана с вашим банковским счётом и паспортом.\n' +
-  '• Мы не запрашиваем документы и регистрацию: только код карты и адрес USDT-кошелька.\n' +
+  '• Мы не запрашиваем документы и регистрацию: только код карты и адрес Bitcoin-кошелька.\n' +
   '• Выплата идёт сразу на ваш кошелёк — без банков, бирж и посредников.\n' +
   '• Меньше точек, где фиксируются ваши данные, — меньше цифрового следа.';
 
@@ -71,7 +75,7 @@ function assetKb() {
     kb.row();
   }
   for (const p of availableGift()) {
-    kb.text(' Подарочная карта — Google Gift Card', `c:buy:${p.key}`).row();
+    kb.text(`🎁 ${p.label}`, `c:buy:${p.key}`).row();
   }
   kb.text('↩️ В меню', 'c:menu');
   return kb;
@@ -108,7 +112,7 @@ function clientMenu(ctx) {
   const online = s.online ? '🟢 Обменник <b>ОНЛАЙН</b>' : '🔴 Обменник <b>ОФФЛАЙН</b>';
   return show(ctx,
     `🌌 <b>VEGA | Official</b> — обменник\n${online}\n\n` +
-    `Обменяем ваши деньги: ₽ → BTC / LTC / USDT (TRC20/ERC20) или Google Gift Card → USDT.\n` +
+    `Обменяем ваши деньги: ₽ → BTC / LTC / USDT (TRC20/ERC20) или подарочные карты Google, iTunes, Xbox и Apple Store → BTC.\n` +
     `Что будем делать?`,
     menuKb(s));
 }
@@ -176,62 +180,67 @@ function createBuyOrder(ctx, pair, crypto, wallet) {
   return order;
 }
 
-/* ---------- заявка: подарочная карта → USDT ---------- */
+/* ---------- заявка: подарочная карта → BTC ---------- */
 
 // Первое, что видит клиент: диалог с правилами передачи карты.
-function giftRules(ctx) {
+function giftRules(ctx, pair) {
   clientFlows.delete(uidOf(ctx));
+  const label = pair?.label || currencies.gift().label;
   return show(ctx,
-    `🎁 <b>Продажа Google Gift Card</b>\n\n` +
+    `🎁 <b>Продажа ${esc(label)}</b>\n\n` +
     `<b>Правила передачи карты:</b>\n` +
-    `1. Карта — <b>Google Gift Card</b> в валюте <b>USD</b>, с полным неизрасходованным балансом. Рубли и другие валюты не принимаем.\n` +
+    `1. Карта — <b>${esc(label)}</b> для региона <b>США</b>, в валюте <b>USD</b>, с полным неизрасходованным балансом. Карты других регионов и валют не принимаем.\n` +
     `2. Сначала создаётся заявка, затем <b>подключается оператор</b>. <b>Ничего не отправляйте и никому не сообщайте код до его команды.</b>\n` +
     `3. Код карты вы отправляете здесь (или в приложении) <b>только после подключения оператора</b>. Он проверит карту (обычно 5–15 минут).\n` +
-    `4. Выплата — в <b>USDT</b> на ваш кошелёк (сеть определим по адресу: T… → TRC20, 0x… → ERC20).\n` +
+    `4. Выплата — в <b>BTC</b> на ваш Bitcoin-кошелёк. Сумма рассчитывается по текущему курсу BTC/USD и комиссии обменника.\n` +
     `5. Поддержка никогда не просит код и деньги вне заявки. Не сообщайте код никому, кроме оператора в рамках заявки.\n` +
     `6. На сделку даётся <b>1 час</b> с момента создания заявки. Если карта недействительна — заявка отклоняется без выплаты.\n\n` +
     GIFT_PRIVACY,
-    new InlineKeyboard().text('✅ Понятно — выбрать номинал', 'c:giftnom').row().text('↩️ К выбору актива', 'c:exchange'));
+    new InlineKeyboard().text('✅ Понятно — выбрать номинал', `c:giftnom:${pair.key}`).row().text('↩️ К выбору актива', 'c:exchange'));
 }
 
 function giftIntro(ctx, pair) {
   const s = store.get().settings;
   const rate = currencies.rateOf(s, pair.currency, pair.network);
   const fee = Number(s.giftPercent) || 0;
-  clientFlows.delete(uidOf(ctx));
+  clientFlows.set(uidOf(ctx), { type: 'gift_select', key: pair.key });
   const kb = new InlineKeyboard()
-    .text('$10', 'c:units:10').text('$20', 'c:units:20').text('$50', 'c:units:50').text('$100', 'c:units:100').row()
-    .text('Другая сумма', 'c:giftnum').row()
+    .text('$10', `c:units:${pair.key}:10`).text('$20', `c:units:${pair.key}:20`).text('$50', `c:units:${pair.key}:50`).text('$100', `c:units:${pair.key}:100`).row()
+    .text('Другая сумма', `c:giftnum:${pair.key}`).row()
     .text('↩️ К выбору актива', 'c:exchange');
   return show(ctx,
-    `Google Gift Card → USDT\n\n` +
-    `Вы отдаёте код карты Google Gift Card номинала в <b>USD</b>, мы выплачиваем USDT на ваш кошелёк.\n\n` +
-    `💱 Курс: <b>1 $ = ${esc(rate)} USDT</b> (комиссия обменника: ${fee}%)\n` +
+    `${esc(pair.label)} → BTC\n\n` +
+    `Вы отдаёте код карты ${esc(pair.label)} номинала в <b>USD</b>, мы выплачиваем BTC на ваш Bitcoin-кошелёк.\n\n` +
+    `💱 Курс: <b>1 $ = ${esc(fmtCrypto(rate, 'BTC', 8))}</b> (комиссия обменника: ${fee}%, курс BTC/USD обновляется автоматически)\n` +
     `⏱ На сделку — 1 час с момента создания.\n` +
-    `✅ Принимаем только карты в долларах (USD).\n\n` +
+    `✅ Принимаем только карты региона США в долларах (USD).\n\n` +
     GIFT_PRIVACY + `\n\n` +
     `Выберите номинал:`,
     kb);
 }
 
 // Заявка создаётся БЕЗ кода: код клиент отправит только после подключения оператора.
-function askGiftWallet(ctx, units) {
-  clientFlows.set(uidOf(ctx), { type: 'gift_wallet', units });
+function askGiftWallet(ctx, units, pair) {
+  clientFlows.set(uidOf(ctx), { type: 'gift_wallet', units, key: pair.key });
   return show(ctx,
-    `👛 <b>Адрес USDT-кошелька</b>\n\n` +
-    `Куда выплатить USDT? Отправьте адрес <b>TRC20</b> (T…) или <b>ERC20</b> (0x…) — сеть определим по адресу.\n\n` +
+    `👛 <b>Адрес Bitcoin-кошелька</b>\n\n` +
+    `Куда выплатить BTC? Отправьте Bitcoin-адрес: <b>bc1…</b>, <b>1…</b> или <b>3…</b>.\n\n` +
     `/cancel — отмена`,
-    new InlineKeyboard().text('↩️ К номиналу', 'c:buy:GOOGLE_USD'));
+    new InlineKeyboard().text('↩️ К номиналу', `c:giftnom:${pair.key}`));
 }
 
-function createGiftOrder(ctx, units, wallet) {
+function createGiftOrder(ctx, units, wallet, pair) {
   const s = store.get().settings;
   if (!s.online) return { error: 'Обмен временно недоступен — попробуйте чуть позже.' };
-  const giftNetwork = currencies.networkByWallet(wallet);
-  if (!giftNetwork) return { error: 'Не похоже на адрес USDT: TRC20 начинается с T, ERC20 — с 0x. Попробуйте ещё раз.' };
-  const payout = currencies.giftPayout(s, units, giftNetwork);
+  if (!pair || pair.kind !== 'gift') return { error: 'Неизвестный вид подарочной карты.' };
+  if (!currencies.isEnabled(s, pair.key)) return { error: 'Продажа этой карты сейчас недоступна.' };
+  const unitsError = currencies.validateUnits(pair.currency, pair.network, units);
+  if (unitsError) return { error: unitsError };
+  const walletError = currencies.validateWallet('BTC', null, wallet);
+  if (walletError) return { error: walletError };
+  const payout = currencies.giftPayout(s, units, pair.currency);
   if (!payout || !(payout.crypto > 0)) {
-    return { error: `Выплата USDT в сети ${giftNetwork} недоступна. Укажите адрес в другой сети.` };
+    return { error: 'Курс BTC для выплаты временно недоступен — попробуйте позже.' };
   }
   const usr = ensureUser(ctx);
   const order = store.createOrder({
@@ -239,11 +248,12 @@ function createGiftOrder(ctx, units, wallet) {
     userName: ctx.from.first_name || 'Клиент',
     userUsername: ctx.from.username || null,
     direction: 'sell',
-    expiresAt: Date.now() + (Number(currencies.gift().ttlMinutes) || 60) * 60 * 1000,
-    rub: Math.round(payout.crypto * (payout.usdtRate || 0)),
+    payoutCurrency: 'BTC',
+    expiresAt: Date.now() + (Number(pair.ttlMinutes) || 60) * 60 * 1000,
+    rub: payout.rub,
     units,
-    currency: 'GOOGLE_USD',
-    network: giftNetwork,
+    currency: pair.currency,
+    network: null,
     wallet,
     rate: payout.rate,
     crypto: payout.crypto,
@@ -266,7 +276,7 @@ const statusIcon = (o) => {
 const amountOf = (o) =>
   isGiftOrder(o) ? `🎁 $${giftUnits(o)}` : fmtRub(o.payRub || o.rub);
 const shortOf = (o) =>
-  isGiftOrder(o) ? 'Google Gift Card' : currencies.shortLabel(o.currency, o.network);
+  isGiftOrder(o) ? giftLabel(o) : currencies.shortLabel(o.currency, o.network);
 
 function ordersList(ctx) {
   const all = store.userOrders(uidOf(ctx));
@@ -326,30 +336,30 @@ function orderDetailText(o) {
       if (o.giftCode) {
         // Совместимость со старыми заявками, где код был указан при создании.
         return head +
-          `🎁 Google Gift Card <b>$${giftUnits(o)}</b> → ${payout}\n\n` +
+          `🎁 ${esc(giftLabel(o))} <b>$${giftUnits(o)}</b> → ${payout}\n\n` +
           `🎟 Код <code>${esc(o.giftCode)}</code> уже у оператора.\n` +
           `Когда будете готовы отдать карту — нажмите «Я оплатил».`;
       }
       return head +
-        `🎁 Google Gift Card <b>$${giftUnits(o)}</b> → ${payout}\n\n` +
+        `🎁 ${esc(giftLabel(o))} <b>$${giftUnits(o)}</b> → ${payout}\n\n` +
         `⏳ <b>Ожидаем подключения оператора</b> — обычно несколько минут.\n` +
         `<b>Ничего не отправляйте и никому не сообщайте код</b> до команды оператора в этой заявке.`;
     }
     if (o.status === 'details' && !o.giftCode) {
       return head +
-        `🎁 Google Gift Card <b>$${giftUnits(o)}</b> → ${payout}\n\n` +
+        `🎁 ${esc(giftLabel(o))} <b>$${giftUnits(o)}</b> → ${payout}\n\n` +
         `🤝 <b>Оператор на связи.</b> Дождался и просит код карты.\n` +
         `Нажмите «🎟 Отправить код карты» и отправьте код одним сообщением.`;
     }
     if (o.status === 'details' && o.giftCode) {
       return head +
-        `🎁 Google Gift Card <b>$${giftUnits(o)}</b> → ${payout}\n\n` +
+        `🎁 ${esc(giftLabel(o))} <b>$${giftUnits(o)}</b> → ${payout}\n\n` +
         `🔎 Код отправлен — карта на проверке. Обычно 5–15 минут.`;
     }
     if (o.status === 'paid') {
       return head +
-        `🎁 Google Gift Card <b>$${giftUnits(o)}</b> → ${payout}\n\n` +
-        `🔎 Карта на проверке: оператор проверит номинал, валюту (<b>USD</b>) и баланс.\n` +
+        `🎁 ${esc(giftLabel(o))} <b>$${giftUnits(o)}</b> → ${payout}\n\n` +
+        `🔎 Карта на проверке: оператор проверит регион (<b>США</b>), валюту (<b>USD</b>), номинал и баланс.\n` +
         `Обычно 5–15 минут.`;
     }
     if (o.status === 'completed') {
@@ -552,27 +562,46 @@ async function handleClientCallback(ctx, d) {
     const pair = currencies.get((f && f.key) || 'BTC');
     return buyPrompt(ctx, pair);
   }
-  if (d === 'c:giftnom') {
-    const pair = currencies.get('GOOGLE_USD');
+  if (d === 'c:giftnom' || d.startsWith('c:giftnom:')) {
+    const key = d === 'c:giftnom' ? currencies.GIFT_KEY : d.slice('c:giftnom:'.length);
+    const pair = currencies.get(key);
     const s = store.get().settings;
+    if (!pair || pair.kind !== 'gift') return assetScreen(ctx);
     if (!currencies.isEnabled(s, pair.key) || !currencies.rateOf(s, pair.currency, pair.network)) {
-      return show(ctx, 'Продажа карт сейчас недоступна. Оставьте заявку в поддержке — мы напишем, когда включим.', assetKb());
+      return show(ctx, 'Продажа этой карты сейчас недоступна. Выберите другой вид карты или попробуйте позже.', assetKb());
     }
     return giftIntro(ctx, pair);
   }
-  if (d === 'c:giftnum') {
-    clientFlows.set(uidOf(ctx), { type: 'gift_units' });
-    return show(ctx, 'Введите номинал карты в $ (кратно $10, минимум $10):\n\n/cancel — отмена', new InlineKeyboard().text('↩️ К номиналу', 'c:buy:GOOGLE_USD'));
+  if (d === 'c:giftnum' || d.startsWith('c:giftnum:')) {
+    const flow = clientFlows.get(uidOf(ctx));
+    const key = d === 'c:giftnum' ? flow?.key || currencies.GIFT_KEY : d.slice('c:giftnum:'.length);
+    const pair = currencies.get(key);
+    if (!pair || pair.kind !== 'gift') return assetScreen(ctx);
+    clientFlows.set(uidOf(ctx), { type: 'gift_units', key: pair.key });
+    return show(ctx,
+      'Введите номинал карты в $ (кратно $10, минимум $10):\n\n/cancel — отмена',
+      new InlineKeyboard().text('↩️ К номиналу', `c:giftnom:${pair.key}`));
   }
   if (d.startsWith('c:units:')) {
-    const units = parseInt(d.slice(8), 10);
-    if (!Number.isFinite(units) || units < 10) return giftIntro(ctx, currencies.get('GOOGLE_USD'));
-    return askGiftWallet(ctx, units);
+    const parts = d.split(':');
+    const flow = clientFlows.get(uidOf(ctx));
+    // Формат с ключом — новые клавиатуры; старый c:units:<amount> остаётся совместимым.
+    const key = parts.length >= 4 ? parts[2] : flow?.key || currencies.GIFT_KEY;
+    const rawUnits = parts.length >= 4 ? parts[3] : parts[2];
+    const units = parseInt(rawUnits, 10);
+    const pair = currencies.get(key);
+    if (!pair || pair.kind !== 'gift') return assetScreen(ctx);
+    const s = store.get().settings;
+    if (!currencies.isEnabled(s, pair.key) || !currencies.rateOf(s, pair.currency, pair.network)) {
+      return show(ctx, 'Продажа этой карты сейчас недоступна. Выберите другой вид карты или попробуйте позже.', assetKb());
+    }
+    if (!Number.isFinite(units) || currencies.validateUnits(pair.currency, pair.network, units)) return giftIntro(ctx, pair);
+    return askGiftWallet(ctx, units, pair);
   }
   if (d.startsWith('c:buy:')) {
     const pair = currencies.get(d.slice('c:buy:'.length));
     if (!pair) return assetScreen(ctx);
-    if (pair.direction === 'sell') return giftRules(ctx);
+    if (pair.direction === 'sell') return giftRules(ctx, pair);
     const s = store.get().settings;
     if (!currencies.isEnabled(s, pair.key) || !currencies.rateOf(s, pair.currency, pair.network)) {
       return show(ctx, `Направление ${esc(pair.label)} сейчас недоступно. Выберите другое.`, assetKb());
@@ -587,7 +616,7 @@ async function handleClientCallback(ctx, d) {
     if (o.status !== 'details') return show(ctx, 'Код можно отправить только после подключения оператора.', orderActionsKb(o));
     clientFlows.set(uidOf(ctx), { type: 'gift_send_code', orderId: o.id });
     return show(ctx,
-      `🎟 <b>Код карты Google Gift Card на $${giftUnits(o)}</b>\n\nОператор в заявке и ждёт код. Отправьте код карты (например XXXX-XXXX-XXXX-XXXX) одним сообщением.\n\n/cancel — отмена`,
+      `🎟 <b>Код карты ${esc(giftLabel(o))} на $${giftUnits(o)}</b>\n\nОператор в заявке и ждёт код. Отправьте код карты (например XXXX-XXXX-XXXX-XXXX) одним сообщением.\n\n/cancel — отмена`,
       new InlineKeyboard().text('↩️ К заявке', `c:order:${o.id}`));
   }
   if (d.startsWith('c:paid:')) return clientPaid(ctx, Number(d.slice(7)));
@@ -638,22 +667,25 @@ async function handleClientText(ctx) {
       new InlineKeyboard().text('📦 Мои заявки', 'c:orders').text('💱 Ещё обмен', 'c:exchange'));
   }
   if (f.type === 'gift_units') {
+    const pair = currencies.get(f.key || currencies.GIFT_KEY);
+    if (!pair || pair.kind !== 'gift') return assetScreen(ctx);
     const n = parseNum(text);
-    const units = currencies.floorUnits('GOOGLE_USD', null, n);
-    if (!Number.isFinite(n) || units < 10) {
+    const units = currencies.floorUnits(pair.currency, pair.network, n);
+    if (!Number.isFinite(n) || currencies.validateUnits(pair.currency, pair.network, units)) {
       return ctx.reply('Минимальный номинал — $10, кратно $10. Например: 20');
     }
-    return askGiftWallet(ctx, units);
+    return askGiftWallet(ctx, units, pair);
   }
   if (f.type === 'gift_wallet') {
     const wallet = text.trim();
-    const { order, error } = createGiftOrder(ctx, f.units, wallet);
+    const pair = currencies.get(f.key || currencies.GIFT_KEY);
+    const { order, error } = createGiftOrder(ctx, f.units, wallet, pair);
     if (error) return ctx.reply(`⚠️ ${error}`);
     clientFlows.delete(uidOf(ctx));
     const payout = payoutOf(order);
     return show(ctx,
       `✅ <b>Заявка #${order.id} создана!</b>\n\n` +
-      `🎁 Google Gift Card <b>$${giftUnits(order)}</b> → <b>${payout}</b>\n\n` +
+      `🎁 ${esc(giftLabel(order))} <b>$${giftUnits(order)}</b> → <b>${payout}</b>\n\n` +
       `⏳ <b>Ожидаем подключения оператора</b> — дождитесь его сигнала в этом чате.\n` +
       `<b>Ничего не отправляйте и никому не сообщайте код карты</b> до команды оператора. На сделку даётся 1 час.`,
       new InlineKeyboard().text('📦 Мои заявки', 'c:orders').text('❌ Отменить', `c:cancel:${order.id}`));

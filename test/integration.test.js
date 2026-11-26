@@ -368,11 +368,12 @@ test('buy order validation: crypto amount must be a positive finite number; no r
 
 const TRC_WALLET = 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ';
 const ERC_WALLET = '0x' + 'Ab1'.repeat(13) + 'a';
+const BTC_WALLET = 'bc1' + 'a'.repeat(30);
 
 test('settings expose USDT TRC20/ERC20 rates with per-network fee and no fee leak', async () => {
   const pub = await (await fetch(`http://127.0.0.1:${server.address().port}/api/settings`)).json();
   const byKey = Object.fromEntries(pub.rates.map((r) => [r.key, r]));
-  assert.deepEqual(Object.keys(byKey).sort(), ['BTC', 'GOOGLE_USD', 'LTC', 'USDT_ERC20', 'USDT_TRC20']);
+  assert.deepEqual(Object.keys(byKey).sort(), ['APPLE_STORE_USD', 'BTC', 'GOOGLE_USD', 'ITUNES_USD', 'LTC', 'USDT_ERC20', 'USDT_TRC20', 'XBOX_USD']);
   assert.equal(byKey.USDT_TRC20.currency, 'USDT');
   assert.equal(byKey.USDT_TRC20.network, 'TRC20');
   assert.equal(byKey.USDT_TRC20.label, 'USDT TRC20');
@@ -616,7 +617,7 @@ test('implausible USDT prices are ignored altogether', async () => {
   }
 });
 
-/* ---------- Google Gift Card → USDT ---------- */
+/* ---------- USD gift cards → BTC ---------- */
 
 test('gift settings expose USD rate, step $10 and no fee leak', async () => {
   const pub = await (await fetch(`http://127.0.0.1:${server.address().port}/api/settings`)).json();
@@ -627,13 +628,13 @@ test('gift settings expose USD rate, step $10 and no fee leak', async () => {
   assert.equal(gift.step, 10);
   assert.equal(gift.minUnits, 10);
   assert.equal(gift.unit, 'USD');
-  assert.ok(gift.rate > 0, 'курс карты (₽ за $1) отдаётся клиенту');
+  assert.ok(gift.rate > 0, 'курс карты (BTC за $1) отдаётся клиенту');
   assert.equal(gift.feePercentGOOGLEUSD, undefined);
   assert.equal(gift.baseRateGOOGLEUSD, undefined);
   assert.equal(gift.feePercent, undefined);
 });
 
-test('gift order: code + USDT address (TRC20), payout follows the fixed card rate', async () => {
+test('gift order uses a Bitcoin wallet and pays BTC at the shared USD/BTC rate', async () => {
   const s = store.get().settings;
   const r = await api('/api/orders', {
     method: 'POST',
@@ -641,7 +642,7 @@ test('gift order: code + USDT address (TRC20), payout follows the fixed card rat
       currency: 'GOOGLE_USD',
       units: 30,
       giftCode: 'ABCD-EFGH-IJKL-MNOP',
-      wallet: TRC_WALLET,
+      wallet: BTC_WALLET,
       startParam: '',
     },
   });
@@ -650,11 +651,12 @@ test('gift order: code + USDT address (TRC20), payout follows the fixed card rat
   assert.equal(order.direction, 'sell');
   assert.equal(order.currency, 'GOOGLE_USD');
   assert.equal(order.units, 30);
-  assert.equal(order.network, 'TRC20', 'сеть выплаты определена по адресу');
+  assert.equal(order.network, null);
+  assert.equal(order.payoutCurrency, 'BTC');
+  assert.equal(order.wallet, BTC_WALLET);
   assert.equal(order.giftCode, 'ABCD-EFGH-IJKL-MNOP');
   assert.equal(order.status, 'new');
-  // Ожидаемая выплата: $30 × 1 USDT за $1 номинала = 30 USDT (по умолчанию без комиссии; от сети не зависит).
-  assert.equal(order.crypto, 30);
+  assert.equal(order.crypto, Math.floor(30 * s.rateGOOGLEUSD * 1e8 + 1e-6) / 1e8);
   assert.equal(order.rate, s.rateGOOGLEUSD);
   calls = [];
   await bus.emit('order_event', { order: store.getOrder(order.id), type: 'new' });
@@ -662,22 +664,58 @@ test('gift order: code + USDT address (TRC20), payout follows the fixed card rat
   assert.ok(card, 'карточка оператору отправлена');
   assert.match(card.text, /Google Gift Card \$30/);
   assert.match(card.text, /ABCD-EFGH-IJKL-MNOP/);
-  // Пока клиент не нажал «Я оплатил», оператору нечего подтверждать.
+  assert.match(card.text, /BTC/);
   assert.ok(!calls.some((c) => JSON.stringify(c.reply_markup || {}).includes('Карта проверена')));
 });
 
-test('gift payout is the same for TRC20 and ERC20 ($10 → 10 USDT)', async () => {
-  for (const wallet of [TRC_WALLET, ERC_WALLET]) {
+test('Google, iTunes, Xbox and Apple Store orders share the same BTC payout rules', async () => {
+  for (const currency of ['GOOGLE_USD', 'ITUNES_USD', 'XBOX_USD', 'APPLE_STORE_USD']) {
+    for (const units of [5, 15]) {
+      const invalid = await api('/api/orders', {
+        method: 'POST',
+        body: { currency, units, wallet: BTC_WALLET },
+      });
+      assert.equal(invalid.status, 400, `${currency} rejects $${units}`);
+    }
     const r = await api('/api/orders', {
       method: 'POST',
-      body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'TEN-' + wallet.slice(0, 6), wallet },
+      body: { currency, units: 10, wallet: BTC_WALLET },
     });
-    assert.equal(r.status, 200);
+    assert.equal(r.status, 200, `${currency} accepted`);
     const { order } = await r.json();
-    assert.equal(order.network, wallet.startsWith('0x') ? 'ERC20' : 'TRC20');
-    assert.equal(order.crypto, 10);
-    assert.equal(order.units, 10);
+    assert.equal(order.currency, currency);
+    assert.equal(order.payoutCurrency, 'BTC');
+    assert.equal(order.network, null);
+    assert.equal(order.crypto, Math.floor(10 * order.rate * 1e8 + 1e-6) / 1e8);
     await bus.emit('order_event', { order: store.getOrder(order.id), type: 'new' });
+  }
+});
+
+test('legacy gift orders with a TRC20/ERC20 network still display USDT payouts', async () => {
+  for (const network of ['TRC20', 'ERC20']) {
+    const order = store.createOrder({
+      userId: '999', userName: 'Legacy Gift', direction: 'sell', currency: 'GOOGLE_USD', network,
+      units: 10, wallet: network === 'TRC20' ? TRC_WALLET : ERC_WALLET,
+      rate: 0.85, crypto: 8.5, rub: 850,
+    });
+    const response = await api(`/api/order/${order.id}`);
+    assert.equal(response.status, 200);
+    const clientOrder = (await response.json()).order;
+    assert.equal(clientOrder.payoutCurrency, 'USDT');
+    calls = [];
+    await bus.emit('order_event', { order: store.getOrder(order.id), type: 'new' });
+    const card = calls.find((c) => String(c.text || '').includes(`#${order.id}`));
+    assert.ok(card);
+    assert.match(card.text, new RegExp(`8\\.5 USDT \\(${network}\\)`));
+
+    const paid = store.updateOrder(order.id, { status: 'paid', giftCode: 'LEGACY-CODE-1234' });
+    calls = [];
+    await bus.emit('order_event', { order: paid, type: 'paid' });
+    const review = calls.find((c) => String(c.text || '').includes(`#${order.id}`));
+    assert.ok(review);
+    assert.match(review.text, new RegExp(`8\\.5 USDT \\(${network}\\)`));
+    assert.match(review.text, new RegExp(`выплатите USDT ${network}`));
+    assert.match(JSON.stringify(review.reply_markup), new RegExp(`выплатить USDT ${network}`));
   }
 });
 
@@ -685,13 +723,13 @@ test('gift nominal must be a multiple of $10 and at least $10', async () => {
   for (const units of [5, 9, 15, 25, 0, -10, 'мусор']) {
     const r = await api('/api/orders', {
       method: 'POST',
-      body: { currency: 'GOOGLE_USD', units, giftCode: 'CODE-CODE-CODE', wallet: TRC_WALLET },
+      body: { currency: 'GOOGLE_USD', units, giftCode: 'CODE-CODE-CODE', wallet: BTC_WALLET },
     });
     assert.equal(r.status, 400, `номинал ${units} должен быть отклонён`);
   }
   const ok = await api('/api/orders', {
     method: 'POST',
-    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'CODE-CODE-CODE', wallet: TRC_WALLET },
+    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'CODE-CODE-CODE', wallet: BTC_WALLET },
   });
   assert.equal(ok.status, 200);
   await bus.emit('order_event', { order: store.getOrder((await ok.json()).order.id), type: 'new' });
@@ -702,7 +740,7 @@ test('gift order is created WITHOUT a code; an invalid code or wallet is rejecte
   // только после подключения оператора (кнопка «🤝 Подключить» в боте оператора).
   const noCode = await api('/api/orders', {
     method: 'POST',
-    body: { currency: 'GOOGLE_USD', units: 10, wallet: TRC_WALLET },
+    body: { currency: 'GOOGLE_USD', units: 10, wallet: BTC_WALLET },
   });
   assert.equal(noCode.status, 200);
   const created = (await noCode.json()).order;
@@ -711,27 +749,27 @@ test('gift order is created WITHOUT a code; an invalid code or wallet is rejecte
   // Если старый клиент всё же прислал код при создании — он проверяется.
   const shortCode = await api('/api/orders', {
     method: 'POST',
-    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'abc', wallet: TRC_WALLET },
+    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'abc', wallet: BTC_WALLET },
   });
   assert.equal(shortCode.status, 400);
   const weird = await api('/api/orders', {
     method: 'POST',
-    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'CODE  CODE  CODE', wallet: TRC_WALLET },
+    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'CODE  CODE  CODE', wallet: BTC_WALLET },
   });
   assert.equal(weird.status, 400);
   // Кошелёк по-прежнему обязателен и проверяется.
   const badWallet = await api('/api/orders', {
     method: 'POST',
-    body: { currency: 'GOOGLE_USD', units: 10, wallet: 'bc1' + 'a'.repeat(30) },
+    body: { currency: 'GOOGLE_USD', units: 10, wallet: 'T' + 'a'.repeat(33) },
   });
   assert.equal(badWallet.status, 400);
-  assert.match((await badWallet.json()).error, /USDT/);
+  assert.match((await badWallet.json()).error, /Bitcoin/);
 });
 
 test('gift two-phase: оператор подключается → клиент шлёт код → карта на проверке', async () => {
   const o = (await (await api('/api/orders', {
     method: 'POST',
-    body: { currency: 'GOOGLE_USD', units: 20, wallet: ERC_WALLET },
+    body: { currency: 'GOOGLE_USD', units: 20, wallet: BTC_WALLET },
   })).json()).order;
   assert.equal(o.giftCode, null);
   assert.equal(o.status, 'new');
@@ -765,10 +803,10 @@ test('gift two-phase: оператор подключается → клиент
   assert.equal(store.getOrder(o.id).status, 'completed');
 });
 
-test('gift flow: code → «Я оплатил» → operator confirms and pays USDT', async () => {
+test('gift flow: code → «Я оплатил» → operator confirms and pays BTC', async () => {
   const o = (await (await api('/api/orders', {
     method: 'POST',
-    body: { currency: 'GOOGLE_USD', units: 50, giftCode: 'CONFIRM-CODE-9999', wallet: TRC_WALLET },
+    body: { currency: 'GOOGLE_USD', units: 50, giftCode: 'CONFIRM-CODE-9999', wallet: BTC_WALLET },
   })).json()).order;
   await bus.emit('order_event', { order: store.getOrder(o.id), type: 'new' });
   // Подтвердить карту до «Я оплатил» нельзя.
@@ -791,37 +829,40 @@ test('gift flow: code → «Я оплатил» → operator confirms and pays U
   assert.equal(done.status, 'completed');
   const msg = calls.find((c) => String(c.text || '').includes('завершена'));
   assert.ok(msg, 'оператор получил инструкцию по выплате');
-  assert.match(msg.text, /Карта Google на \$50 проверена/);
-  assert.match(msg.text, /USDT/);
+  assert.match(msg.text, /Карта Google Gift Card на \$50 проверена/);
+  assert.match(msg.text, /BTC/);
   const { order } = await (await api(`/api/order/${o.id}`)).json();
   assert.equal(order.status, 'completed');
   assert.equal(order.giftCode, 'CONFIRM-CODE-9999');
 });
 
-test('gift commission: default 0% → $1 = 1 USDT; admin sets the commission', async () => {
+test('gift commission discounts the live BTC/USD payout consistently for every card', async () => {
   const before = { ...store.get().settings };
+  const spot = currencies.giftSpotRate(before);
   assert.equal(before.giftPercent, 0, 'по умолчанию комиссия 0');
-  assert.equal(before.rateGOOGLEUSD, 1, 'по умолчанию $1 номинала = 1 USDT');
+  assert.equal(before.rateGOOGLEUSD, currencies.giftRateFromPercent(0, before));
+  assert.ok(spot > 0, 'есть BTC/USD spot rate');
   await click(111, 's:fee_gift');
   await text(111, '12');
   const s = store.get().settings;
+  const discounted = Math.round(spot * 0.88 * 1e12) / 1e12;
   assert.equal(s.giftPercent, 12);
-  assert.equal(s.rateGOOGLEUSD, 0.88, 'курс карты = (100 − 12) / 100');
+  assert.equal(s.rateGOOGLEUSD, discounted, 'курс BTC за $1 уменьшается на размер комиссии');
   assert.equal(s.feePercent, before.feePercent, 'общая комиссия BTC/LTC не менялась');
   assert.equal(s.feePercentUSDTTRC20, before.feePercentUSDTTRC20, 'комиссия USDT TRC20 не менялась');
   assert.equal(s.rateUSDTTRC20, before.rateUSDTTRC20, 'курс USDT TRC20 не менялся');
-  // Курс выводится из комиссии и отдаётся клиенту.
   const pub = await (await fetch(`http://127.0.0.1:${server.address().port}/api/settings`)).json();
-  assert.equal(pub.rates.find((r) => r.key === 'GOOGLE_USD').rate, 0.88);
-  // Возвращаем комиссию 0% → снова 1:1, карта $10 → 10 USDT.
+  assert.equal(pub.rates.find((r) => r.key === 'GOOGLE_USD').rate, discounted);
+  assert.equal(pub.rates.find((r) => r.key === 'ITUNES_USD').rate, discounted, 'все бренды используют общий курс');
   await click(111, 's:fee_gift');
   await text(111, '0');
-  assert.equal(store.get().settings.rateGOOGLEUSD, 1);
+  assert.equal(store.get().settings.rateGOOGLEUSD, currencies.giftRateFromPercent(0, store.get().settings));
   const check = await api('/api/orders', {
     method: 'POST',
-    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'BACK-TO-0-CODE', wallet: TRC_WALLET },
+    body: { currency: 'GOOGLE_USD', units: 10, wallet: BTC_WALLET },
   });
-  assert.equal((await check.json()).order.crypto, 10);
+  const order = (await check.json()).order;
+  assert.equal(order.crypto, Math.floor(10 * spot * 1e8 + 1e-6) / 1e8);
 });
 
 test('admin changes the support chat link from the app; clients see it live', async () => {
@@ -875,7 +916,7 @@ test('admin settings endpoint: directions toggle, fees and gift card config; cli
   const gift = await api('/api/admin/settings', { id: 111, method: 'POST', body: { giftPercent: 15 } });
   const giftBody = await gift.json();
   assert.equal(giftBody.admin.giftPercent, 15);
-  assert.equal(giftBody.admin.rateGOOGLEUSD, 0.85);
+  assert.equal(giftBody.admin.rateGOOGLEUSD, currencies.giftRateFromPercent(15, store.get().settings));
   const badDir = await api('/api/admin/settings', { id: 111, method: 'POST', body: { enabled: { NOPE: true } } });
   assert.equal(badDir.status, 400);
   // Чисто текстовые ошибки тоже отклоняются.
@@ -887,19 +928,19 @@ test('admin settings endpoint: directions toggle, fees and gift card config; cli
   assert.equal(store.get().settings.feePercent, oldFee ?? 0);
   assert.equal(store.get().settings.feePercentUSDTTRC20, oldTrc ?? 0);
   assert.equal(store.get().settings.giftPercent, oldGift ?? 0);
-  assert.equal(store.get().settings.rateGOOGLEUSD, currencies.giftRateFromPercent(oldGift ?? 0), 'курс карты всегда выводится из комиссии');
+  assert.equal(store.get().settings.rateGOOGLEUSD, currencies.giftRateFromPercent(oldGift ?? 0, store.get().settings), 'курс карты всегда выводится из BTC/USD и комиссии');
 });
 
 test('disabled gift direction rejects new cards but keeps old orders', async () => {
   const old = (await (await api('/api/orders', {
     method: 'POST',
-    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'OLD-CODE-1111', wallet: TRC_WALLET },
+    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'OLD-CODE-1111', wallet: BTC_WALLET },
   })).json()).order;
   await click(111, 's:dir_GOOGLE_USD');
   assert.equal(currencies.isEnabled(store.get().settings, 'GOOGLE_USD'), false);
   const denied = await api('/api/orders', {
     method: 'POST',
-    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'NEW-CODE-2222', wallet: TRC_WALLET },
+    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'NEW-CODE-2222', wallet: BTC_WALLET },
   });
   assert.equal(denied.status, 400);
   const { order } = await (await api(`/api/order/${old.id}`)).json();
@@ -909,7 +950,7 @@ test('disabled gift direction rejects new cards but keeps old orders', async () 
   await bus.emit('order_event', { order: store.getOrder(old.id), type: 'reject' });
 });
 
-test('card rate does not depend on the USD exchange rate', async () => {
+test('gift rate uses the official USD/BTC cross rate and refreshes with market data', async () => {
   const realFetch = global.fetch;
   global.fetch = async (url) => {
     const u = String(url);
@@ -924,10 +965,12 @@ test('card rate does not depend on the USD exchange rate', async () => {
   try {
     const official = await rates.fetchOfficial();
     assert.equal(official.usd, 93.5);
-    // Курс карты считается от номинала, а не от курса доллара.
     const fresh = await rates.refreshRates();
-    assert.equal(fresh.settings.rateGOOGLEUSD, currencies.giftRateFromPercent(fresh.settings.giftPercent));
-    assert.equal(fresh.settings.rateGOOGLEUSD, 1, 'по умолчанию комиссия 0 → $1 = 1 USDT');
+    assert.equal(fresh.settings.baseRateUSD, 93.5);
+    assert.equal(fresh.settings.baseRateBTC, 9_800_000);
+    assert.equal(fresh.settings.rateGOOGLEUSD, currencies.giftRateFromPercent(fresh.settings.giftPercent, fresh.settings));
+    const expectedSpot = Math.round((93.5 / 9_800_000) * 1e12) / 1e12;
+    assert.equal(fresh.settings.rateGOOGLEUSD, expectedSpot, 'при комиссии 0 курс равен USD/RUB ÷ BTC/RUB');
   } finally {
     global.fetch = realFetch;
   }
@@ -937,7 +980,7 @@ test('gift order gets a 1-hour deadline and expires with a clear reason', async 
   const before = Date.now();
   const o = (await (await api('/api/orders', {
     method: 'POST',
-    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'TTL-CODE-0001', wallet: TRC_WALLET },
+    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'TTL-CODE-0001', wallet: BTC_WALLET },
   })).json()).order;
   assert.ok(o.expiresAt, 'срок передан клиенту');
   const ttl = o.expiresAt - before;
@@ -957,7 +1000,7 @@ test('gift order gets a 1-hour deadline and expires with a clear reason', async 
 test('paid gift order does not expire while operator checks the card', async () => {
   const o = (await (await api('/api/orders', {
     method: 'POST',
-    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'PAID-CODE-0002', wallet: TRC_WALLET },
+    body: { currency: 'GOOGLE_USD', units: 10, giftCode: 'PAID-CODE-0002', wallet: BTC_WALLET },
   })).json()).order;
   await api(`/api/order/${o.id}/paid`, { method: 'POST' });
   assert.equal(store.getOrder(o.id).status, 'paid');

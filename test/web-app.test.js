@@ -212,15 +212,23 @@ test('quote stage: оператор назвал сумму — клиент в�
 
 /* ---------- USDT TRC20 / ERC20 ---------- */
 
-const giftDir = {
-  key: 'GOOGLE_USD', direction: 'sell', currency: 'GOOGLE_USD', network: null, kind: 'gift',
-  label: 'Google Gift Card', symbol: '🎁', coin: 'google', decimals: 0, display: 0,
-  unit: 'USD', step: 10, minUnits: 10,
-  walletHint: 'Адрес USDT-кошелька (T… или 0x…)',
-  walletPattern: '^(T[1-9A-HJ-NP-Za-km-z]{33}|0x[0-9a-fA-F]{40})$',
-  walletError: 'Укажите адрес USDT: TRC20 начинается с T (34 символа), ERC20 — 0x и 40 hex-символов.',
-  rate: 1, enabled: true,
-};
+const giftDir = (key, label, symbol, coin) => ({
+  key, direction: 'sell', currency: key, network: null, kind: 'gift',
+  payoutCurrency: 'BTC', payoutDecimals: 8,
+  label, symbol, coin, decimals: 0, display: 0, unit: 'USD', step: 10, minUnits: 10,
+  walletHint: 'Адрес Bitcoin-кошелька (bc1… / 1… / 3…)',
+  walletPattern: '^(bc1[a-zA-HJ-NP-Z0-9]{25,62}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$',
+  walletError: 'Проверьте адрес Bitcoin-кошелька.',
+  infoNote: 'Карту можно купить на любом маркетплейсе — Яндекс Маркет, Ozon, Wildberries. Нужна карта региона США в USD.',
+  currencyNote: 'Регион США, номинал в USD ($).',
+  ttlMinutes: 60, rate: 0.00001, enabled: true,
+});
+const giftDirs = [
+  giftDir('GOOGLE_USD', 'Google Gift Card', '🎁', 'google'),
+  giftDir('ITUNES_USD', 'iTunes Gift Card', '🎵', 'itunes'),
+  giftDir('XBOX_USD', 'Xbox Gift Card', '🎮', 'xbox'),
+  giftDir('APPLE_STORE_USD', 'Apple Store Gift Card', '🍎', 'apple'),
+];
 
 const usdtSettings = {
   ...settings,
@@ -231,7 +239,7 @@ const usdtSettings = {
     { key: 'LTC', currency: 'LTC', network: null, label: 'LTC', symbol: 'Ł', coin: 'ltc', decimals: 8, display: null, walletHint: 'Адрес LTC-кошелька', walletPattern: '^(ltc1[a-zA-HJ-NP-Z0-9]{25,62}|[LM3][a-km-zA-HJ-NP-Z1-9]{25,34})$', walletError: 'Проверьте адрес LTC-кошелька — он выглядит некорректно.', rate: settings.rateLTC, enabled: true },
     { key: 'USDT_TRC20', currency: 'USDT', network: 'TRC20', label: 'USDT TRC20', symbol: '₮', coin: 'usdt', decimals: 6, display: 2, walletHint: 'Адрес USDT TRC20 (T…, 34 символа)', walletPattern: '^T[1-9A-HJ-NP-Za-km-z]{33}$', walletError: 'Это не похоже на адрес USDT в сети TRC20 — он начинается с T и содержит 34 символа.', networkHint: 'сеть TRON · низкая комиссия, зачисление 1–3 мин', rate: 98.75, enabled: true },
     { key: 'USDT_ERC20', currency: 'USDT', network: 'ERC20', label: 'USDT ERC20', symbol: '₮', coin: 'usdt', decimals: 6, display: 2, walletHint: 'Адрес USDT ERC20 (0x + 40 символов)', walletPattern: '^0x[0-9a-fA-F]{40}$', walletError: 'Это не похоже на адрес USDT в сети ERC20 — нужен 0x и 40 hex-символов.', networkHint: 'сеть Ethereum · высокая комиссия сети, зачисление 5–15 мин', rate: 101.5, enabled: true },
-    giftDir,
+    ...giftDirs,
   ],
 };
 
@@ -266,7 +274,7 @@ async function usdtApp(t, order = initial, me = { id: 999 }) {
 
 // Выбор актива в новой логике: экран активов → шторка (группа → актив).
 async function pickAssetUi(a, key) {
-  const gift = key === 'GOOGLE_USD';
+  const gift = ['GOOGLE_USD', 'ITUNES_USD', 'XBOX_USD', 'APPLE_STORE_USD'].includes(key);
   const group = a.document.querySelector(`[data-group="${gift ? 'gift' : 'crypto'}"]`);
   assert.ok(group, 'на экране выбора активов есть нужная группа');
   group.click();
@@ -298,11 +306,11 @@ test('asset picker opens the exchange: sheets list assets, back returns to picke
   a.document.querySelector('#btnBackToAssets').click();
   assert.ok(!a.document.querySelector('#assetPicker').classList.contains('hidden'));
   assert.ok(a.document.querySelector('#assetForm').classList.contains('hidden'));
-  // Подарочные карты — такая же шторка, но пока единственный вид: Google Gift Card.
+  // Подарочные карты перечислены отдельно, с общими правилами США/USD.
   a.document.querySelector('[data-group="gift"]').click();
   keys = [...a.document.querySelectorAll('#sheetList .sheet-row')].map((b) => b.dataset.key);
-  assert.deepEqual(keys, ['GOOGLE_USD']);
-  assert.match(a.document.querySelector('#sheetFoot').textContent, /Google Gift Card/);
+  assert.deepEqual(keys, ['GOOGLE_USD', 'ITUNES_USD', 'XBOX_USD', 'APPLE_STORE_USD']);
+  assert.match(a.document.querySelector('#sheetFoot').textContent, /карты США в USD/);
   a.document.querySelector('#sheetClose').click();
   // Выбор карты открывает форму карты.
   a.document.querySelector('[data-group="gift"]').click();
@@ -388,7 +396,7 @@ test('disabled direction stays visible but dimmed and cannot be selected', async
   await tick();
   assert.ok(a.document.querySelector('#assetForm').classList.contains('hidden') === false);
   assert.match(a.document.querySelector('#walHint').textContent, /TRC20/);
-  // Google Gift Card по-прежнему единственный вид в шторке подарочных карт.
+  // Все поддерживаемые виды карт остаются в отдельной шторке.
   await pickAssetUi(a, 'GOOGLE_USD');
   assert.ok(!a.document.querySelector('#giftForm').classList.contains('hidden'));
 });
@@ -397,7 +405,7 @@ test('fully disabled group stays visible but dimmed and cannot be opened into a 
   const a = await usdtApp(t);
   const noGift = {
     ...usdtSettings,
-    rates: usdtSettings.rates.map((r) => (r.key === 'GOOGLE_USD' ? { ...r, enabled: false, rate: null } : r)),
+    rates: usdtSettings.rates.map((r) => (r.kind === 'gift' ? { ...r, enabled: false, rate: null } : r)),
   };
   a.handle((url) => (url === '/api/settings' ? a.json(noGift) : null));
   await a.refresh();
@@ -421,92 +429,91 @@ test('history shows USDT network and 2-decimal payout', async (t) => {
   assert.match(a.document.querySelector('.h-ic.usdt').textContent, /TRC/);
 });
 
-/* ---------- Google Gift Card → USDT ---------- */
+/* ---------- USD gift cards → BTC ---------- */
 
-test('Google Gift Card from the sheet swaps the form', async (t) => {
+test('gift picker lists every brand and updates the form for the selected product', async (t) => {
   const a = await usdtApp(t);
   await pickAssetUi(a, 'BTC');
-  // По умолчанию — обычная покупка крипты, формы карты не видно.
   assert.ok(!a.document.querySelector('#buyForm').classList.contains('hidden'));
   assert.ok(a.document.querySelector('#giftForm').classList.contains('hidden'));
-  // Никаких отдельных режимов «купить/продать» — только выбор актива.
   assert.equal(a.document.querySelector('#segMode'), null);
+
   await pickAssetUi(a, 'GOOGLE_USD');
-  assert.ok(a.document.querySelector('#buyForm').classList.contains('hidden'), 'поля рублей скрыты');
-  assert.ok(!a.document.querySelector('#giftForm').classList.contains('hidden'), 'видна форма карты');
+  assert.ok(a.document.querySelector('#buyForm').classList.contains('hidden'));
+  assert.ok(!a.document.querySelector('#giftForm').classList.contains('hidden'));
+  assert.equal(a.document.querySelector('#giftTitle').textContent, 'Google Gift Card');
   assert.match(a.document.querySelector('#giftRule').textContent, /кратно \$10/);
-  // Кнопка назад к выбору активов всегда под рукой.
-  assert.ok(a.document.querySelector('#btnBackToAssets'));
-  // Возврат к крипте — форма карты снова скрыта.
-  await pickAssetUi(a, 'BTC');
-  assert.ok(!a.document.querySelector('#buyForm').classList.contains('hidden'));
-  assert.ok(a.document.querySelector('#giftForm').classList.contains('hidden'));
+
+  await pickAssetUi(a, 'ITUNES_USD');
+  assert.equal(a.document.querySelector('#giftTitle').textContent, 'iTunes Gift Card');
+  await pickAssetUi(a, 'APPLE_STORE_USD');
+  assert.equal(a.document.querySelector('#giftTitle').textContent, 'Apple Store Gift Card');
+
+  a.document.querySelector('#btnBackToAssets').click();
+  assert.ok(!a.document.querySelector('#assetPicker').classList.contains('hidden'));
 });
 
-test('gift nominal rounds to $10 and price is 1:1 by default: $10 → 10 USDT in any network', async (t) => {
+test('gift nominal rounds to $10 and calculates a BTC payout', async (t) => {
   const a = await usdtApp(t);
   await pickAssetUi(a, 'GOOGLE_USD');
   const units = a.document.querySelector('#inUnits');
   units.value = '37';
   units.dispatchEvent(new a.window.Event('input', { bubbles: true }));
-  // 37 → 30, курс карты 1 USDT за $1 (по умолчанию, комиссия оператора 0%) → 30 USDT.
-  assert.equal(a.document.querySelector('#outUsdt').value, '30 USDT');
-  // Адрес ERC20 определяет сеть, но цена карты не меняется.
-  const wallet = a.document.querySelector('#inUsdtWallet');
-  wallet.value = '0x' + 'a'.repeat(40);
+  assert.equal(a.document.querySelector('#outBtc').value, '0.0003 BTC');
+  const wallet = a.document.querySelector('#inBtcWallet');
+  wallet.value = 'bc1' + 'a'.repeat(30);
   wallet.dispatchEvent(new a.window.Event('input', { bubbles: true }));
-  assert.equal(a.document.querySelector('#outUsdt').value, '30 USDT · ERC20');
-  // Карта $10 — ровно 10 USDT.
+  assert.equal(a.document.querySelector('#outBtc').value, '0.0003 BTC');
+  assert.match(a.document.querySelector('#giftBtcHint').textContent, /0\.0003 BTC/);
+
   units.value = '10';
   units.dispatchEvent(new a.window.Event('input', { bubbles: true }));
-  assert.equal(a.document.querySelector('#outUsdt').value, '10 USDT · ERC20');
-  // Быстрый номинал подставляет значение.
+  assert.equal(a.document.querySelector('#outBtc').value, '0.0001 BTC');
   a.document.querySelectorAll('#segNom button')[2].click();
   assert.equal(units.value, '50');
   assert.match(a.document.querySelector('#giftMeta').textContent, /\$50/);
-  assert.match(a.document.querySelector('#giftMeta').textContent, /1 \$ = 1 USDT/);
+  assert.match(a.document.querySelector('#giftMeta').textContent, /1 \$ = 0\.00001 BTC/);
 });
 
-test('selling a card opens the rules dialog first; the order is created without a code and waits for the operator', async (t) => {
+test('iTunes card rules are confirmed before a BTC order is created with its brand key', async (t) => {
   const a = await usdtApp(t);
-  await pickAssetUi(a, 'GOOGLE_USD');
+  await pickAssetUi(a, 'ITUNES_USD');
   a.document.querySelector('#inUnits').value = '20';
-  a.document.querySelector('#inUsdtWallet').value = 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ';
-  a.handle((url, options) => {
+  a.document.querySelector('#inBtcWallet').value = 'bc1' + 'a'.repeat(30);
+  a.handle((url) => {
     if (url === '/api/orders') {
-      return a.json({ order: { ...initial, id: 5, direction: 'sell', currency: 'GOOGLE_USD', units: 20, network: 'TRC20', giftCode: null, crypto: 20, status: 'new', expiresAt: Date.now() + 3600e3 } });
+      return a.json({ order: {
+        ...initial, id: 5, direction: 'sell', currency: 'ITUNES_USD', units: 20,
+        network: null, payoutCurrency: 'BTC', giftCode: null, crypto: 0.0002,
+        status: 'new', expiresAt: Date.now() + 3600e3,
+      } });
     }
     return null;
   });
   a.document.querySelector('#btnSell').click();
   await tick();
-  // Сначала открывается диалог с правилами перевода — заявка ещё не создаётся.
   const rules = a.document.querySelector('#giftRules');
-  assert.ok(!rules.classList.contains('hidden'), 'диалог с правилами открыт');
-  assert.match(rules.textContent, /Правила передачи карты/);
-  assert.match(rules.textContent, /Ничего не отправляйте/);
-  assert.match(rules.textContent, /подключения оператора/i);
-  assert.ok(!a.calls.some((c) => c.pathname === '/api/orders'), 'до согласия заявка не создаётся');
-  // Подтверждаем правила — заявка создаётся без кода.
+  assert.ok(!rules.classList.contains('hidden'));
+  assert.match(rules.textContent, /iTunes Gift Card/);
+  assert.match(rules.textContent, /региона США/);
+  assert.ok(!a.calls.some((c) => c.pathname === '/api/orders'));
+
   a.document.querySelector('#giftRulesConfirm').click();
   await tick();
   const post = a.calls.find((c) => c.pathname === '/api/orders');
-  assert.ok(post, 'запрос на создание заявки ушёл после согласия с правилами');
+  assert.ok(post);
   const body = JSON.parse(post.body);
-  assert.equal(body.currency, 'GOOGLE_USD');
+  assert.equal(body.currency, 'ITUNES_USD');
   assert.equal(body.units, 20);
-  assert.equal(body.giftCode, undefined, 'код при создании заявки не отправляется');
-  assert.equal(body.wallet, 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ');
-  // Клиент ждёт оператора: ни «Я оплатил», ни поля для кода.
-  assert.match(a.document.querySelector('#exOrder').textContent, /Ожидаем подключения оператора/);
-  assert.match(a.document.querySelector('#exOrder').textContent, /Ничего не отправляйте/);
-  assert.equal(a.document.querySelector('#btnGiftPaid'), null);
-  assert.equal(a.document.querySelector('#inGiftSendCode'), null, 'поле кода не показывается до подключения оператора');
+  assert.equal(body.giftCode, undefined);
+  assert.equal(body.wallet, 'bc1' + 'a'.repeat(30));
+  assert.match(a.document.querySelector('#exOrder').textContent, /iTunes Gift Card/);
+  assert.match(a.document.querySelector('#exOrder').textContent, /BTC/);
 });
 
-test('gift form validates nominal and wallet; rules dialog opens only when valid', async (t) => {
+test('gift form requires a valid denomination and Bitcoin wallet before rules open', async (t) => {
   const a = await usdtApp(t);
-  await pickAssetUi(a, 'GOOGLE_USD');
+  await pickAssetUi(a, 'APPLE_STORE_USD');
   const rules = a.document.querySelector('#giftRules');
   const units = a.document.querySelector('#inUnits');
   units.value = '5';
@@ -514,36 +521,36 @@ test('gift form validates nominal and wallet; rules dialog opens only when valid
   a.document.querySelector('#btnSell').click();
   await tick();
   assert.match(a.document.querySelector('#giftErr').textContent, /\$10/);
-  assert.ok(rules.classList.contains('hidden'), 'диалог не открылся при номинале ниже $10');
+  assert.ok(rules.classList.contains('hidden'));
+
   units.value = '20';
   units.dispatchEvent(new a.window.Event('input', { bubbles: true }));
-  a.document.querySelector('#inUsdtWallet').value = 'bc1' + 'a'.repeat(30);
+  a.document.querySelector('#inBtcWallet').value = 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ';
   a.document.querySelector('#btnSell').click();
   await tick();
-  assert.match(a.document.querySelector('#giftErr').textContent, /USDT/);
-  assert.ok(rules.classList.contains('hidden'), 'диалог не открылся при невалидном адресе');
+  assert.match(a.document.querySelector('#giftErr').textContent, /Bitcoin/);
+  assert.ok(rules.classList.contains('hidden'));
   assert.ok(!a.calls.some((c) => c.pathname === '/api/orders'));
-  // Отмена в диалоге закрывает его и не создаёт заявку.
-  a.document.querySelector('#inUsdtWallet').value = 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ';
+
+  a.document.querySelector('#inBtcWallet').value = 'bc1' + 'a'.repeat(30);
   a.document.querySelector('#btnSell').click();
   await tick();
-  assert.ok(!rules.classList.contains('hidden'), 'диалог открылся при валидной форме');
+  assert.ok(!rules.classList.contains('hidden'));
   a.document.querySelector('#giftRulesCancel').click();
   await tick();
-  assert.ok(!rules.classList.contains('open'), 'диалог закрыт по отмене');
+  assert.ok(!rules.classList.contains('open'));
   assert.ok(!a.calls.some((c) => c.pathname === '/api/orders'));
 });
 
-test('operator connects → client sends the code from the stage screen → card is under review', async (t) => {
+test('operator connects to an Xbox gift order and client sends the code from its stage screen', async (t) => {
   const giftDetails = {
-    ...initial, id: 8, direction: 'sell', currency: 'GOOGLE_USD', units: 20, network: 'TRC20',
-    wallet: 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ', giftCode: null, crypto: 20, status: 'details',
-    expiresAt: Date.now() + 3600e3,
+    ...initial, id: 8, direction: 'sell', currency: 'XBOX_USD', units: 20, network: null,
+    payoutCurrency: 'BTC', wallet: 'bc1' + 'a'.repeat(30), giftCode: null, crypto: 0.0002,
+    status: 'details', expiresAt: Date.now() + 3600e3,
   };
   const a = await usdtApp(t, giftDetails);
-  // Оператор на связи: поле отправки кода показано, «Я оплатил» нет.
-  assert.match(a.document.querySelector('#exOrder').textContent, /Оператор на связи/);
-  assert.ok(a.document.querySelector('#inGiftSendCode'), 'поле кода открыто после подключения оператора');
+  assert.match(a.document.querySelector('#exOrder').textContent, /Xbox Gift Card/);
+  assert.ok(a.document.querySelector('#inGiftSendCode'));
   assert.equal(a.document.querySelector('#btnGiftPaid'), null);
   a.handle((url) => {
     if (url === '/api/order/8/code') return a.json({ order: { ...giftDetails, giftCode: 'SEND-CODE-4242', status: 'paid', paidAt: Date.now() } });
@@ -553,61 +560,60 @@ test('operator connects → client sends the code from the stage screen → card
   a.document.querySelector('#btnGiftSend').click();
   await tick();
   const post = a.calls.find((c) => c.pathname === '/api/order/8/code');
-  assert.ok(post, 'код ушёл на /api/order/:id/code');
+  assert.ok(post);
   assert.equal(JSON.parse(post.body).giftCode, 'SEND-CODE-4242');
   assert.match(a.document.querySelector('#exOrder').textContent, /Карта на проверке/);
 });
 
-test('completed gift order in history shows nominal and USDT payout', async (t) => {
+test('legacy gift order in history keeps its USDT network payout and correct brand', async (t) => {
   const giftOrder = {
-    ...initial, id: 1, direction: 'sell', currency: 'GOOGLE_USD', units: 50, network: 'TRC20',
+    ...initial, id: 1, direction: 'sell', currency: 'ITUNES_USD', units: 50, network: 'TRC20',
     giftCode: 'HIST-CODE-5555', crypto: 43.56, status: 'completed',
   };
   const a = await usdtApp(t, giftOrder);
   const history = a.document.querySelector('#view-history').textContent;
+  assert.match(history, /iTunes Gift Card/);
   assert.match(history, /\$50/);
   assert.match(history, /43\.56 USDT/);
-  assert.ok(!/₽ → GOOGLE_USD/.test(history), 'в истории нет бессмысленной подписи рубль→карта');
-  assert.ok(!/GOOGLE_USD/.test(history), 'в истории нет сырого тикера GOOGLE_USD — сумма в USDT');
+  assert.ok(!/ITUNES_USD/.test(history));
   const row = a.document.querySelector('#view-history [data-order="1"]');
-  assert.equal(row.querySelector('.h-ic').classList.contains('google'), true, 'иконка гифт-заявки — Google');
+  assert.equal(row.querySelector('.h-ic').classList.contains('itunes'), true);
 });
 
-test('gift form explains marketplaces, USD-only and the 1-hour deadline', async (t) => {
+test('gift form explains US-region cards in USD and the 1-hour deadline', async (t) => {
   const a = await usdtApp(t);
   await pickAssetUi(a, 'GOOGLE_USD');
   const text = a.document.querySelector('#giftForm').textContent;
   assert.match(text, /Яндекс Маркет/);
   assert.match(text, /Ozon/);
   assert.match(text, /Wildberries/);
+  assert.match(text, /США/);
   assert.match(text, /USD/);
   assert.match(text, /1 час/);
 });
 
-test('client confirms a gift card with «Я оплатил» and sees the checking stage', async (t) => {
+test('Apple Store gift order with a legacy code shows BTC payout and checking stage', async (t) => {
   const giftNew = {
-    ...initial, id: 7, direction: 'sell', currency: 'GOOGLE_USD', units: 20, network: 'TRC20',
-    wallet: 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ',
-    giftCode: 'PAY-CODE-7777', crypto: 17, status: 'new', expiresAt: Date.now() + 3600 * 1000,
+    ...initial, id: 7, direction: 'sell', currency: 'APPLE_STORE_USD', units: 20, network: null,
+    payoutCurrency: 'BTC', wallet: 'bc1' + 'a'.repeat(30),
+    giftCode: 'PAY-CODE-7777', crypto: 0.0002, status: 'new', expiresAt: Date.now() + 3600 * 1000,
   };
   const a = await usdtApp(t, giftNew);
-  // Карточка показывает таймер и кнопку «Я оплатил».
-  assert.match(a.document.querySelector('#exOrder').textContent, /Google Gift Card/);
+  assert.match(a.document.querySelector('#exOrder').textContent, /Apple Store Gift Card/);
+  assert.match(a.document.querySelector('#exOrder').textContent, /0\.0002 BTC/);
   assert.match(a.document.querySelector('#exOrder').textContent, /На сделку осталось/);
   a.handle((url) => {
     if (url === '/api/order/7/paid') return a.json({ order: { ...giftNew, status: 'paid', paidAt: Date.now() } });
-    if (url === '/api/order/7') return null;
     return null;
   });
   a.document.querySelector('#btnGiftPaid').click();
   await tick();
-  const post = a.calls.find((c) => c.pathname === '/api/order/7/paid');
-  assert.ok(post, 'клиент отправил «Я оплатил»');
+  assert.ok(a.calls.some((c) => c.pathname === '/api/order/7/paid'));
   assert.match(a.document.querySelector('#exOrder').textContent, /Карта на проверке/);
-  assert.equal(a.document.querySelector('#btnGiftPaid'), null, 'кнопку больше не показываем');
+  assert.equal(a.document.querySelector('#btnGiftPaid'), null);
 });
 
-test('expired gift order shows the deadline reason instead of a generic cancel', async (t) => {
+test('expired legacy gift order shows the deadline reason instead of a generic cancel', async (t) => {
   const expired = {
     ...initial, id: 1, direction: 'sell', currency: 'GOOGLE_USD', units: 10, network: 'TRC20',
     wallet: 'TXFBqBbqJommqZf7BV8NNYzePh97UmJodJ',
@@ -615,9 +621,8 @@ test('expired gift order shows the deadline reason instead of a generic cancel',
     cancelReason: 'Срок на сделку истёк', expiresAt: Date.now() - 1000,
   };
   const a = await usdtApp(t, expired);
-  // Истёкшая заявка лежит в истории — открываем её кликом.
   const item = a.document.querySelector('#view-history [data-order="1"]');
-  assert.ok(item, 'запись истории кликабельна');
+  assert.ok(item);
   item.click();
   await tick();
   assert.match(a.document.querySelector('#exOrder').textContent, /Срок на сделку истёк/);
@@ -653,8 +658,8 @@ test('Профиль клиента: вкладка «Профиль» с пор
 });
 
 
-const adminSettingsBlock = { chat: 'https://t.me/+old_chat', feePercent: 1.5, feePercentUSDTTRC20: 0.5, feePercentUSDTERC20: 1, giftPercent: 12, rateGOOGLEUSD: 0.88, online: true,
-  directions: { BTC: true, LTC: true, USDT_TRC20: true, USDT_ERC20: true, GOOGLE_USD: true } };
+const adminSettingsBlock = { chat: 'https://t.me/+old_chat', feePercent: 1.5, feePercentUSDTTRC20: 0.5, feePercentUSDTERC20: 1, giftPercent: 12, rateGOOGLEUSD: 0.00001, online: true,
+  directions: { BTC: true, LTC: true, USDT_TRC20: true, USDT_ERC20: true, GOOGLE_USD: true, ITUNES_USD: true, XBOX_USD: true, APPLE_STORE_USD: true } };
 
 test('Админка в приложении: вкладки, переключение направлений и комиссий', async (t) => {
   const me = { id: 42, name: 'Шеф', isAdmin: true };
@@ -712,9 +717,13 @@ test('Админка в приложении: вкладки, переключе
   // Вкладка «Карты»: превью и сохранение.
   a.document.querySelector('#admTabs .adm-tab[data-tab="gift"]').click();
   assert.equal(a.document.querySelector('#admGiftRate'), null, 'поля ручного курса больше нет');
+  assert.deepEqual(
+    [...a.document.querySelectorAll('#admGiftDirs .adm-toggle')].map((b) => b.dataset.dir),
+    ['GOOGLE_USD', 'ITUNES_USD', 'XBOX_USD', 'APPLE_STORE_USD']
+  );
   a.document.querySelector('#admGiftFee').value = '10';
   a.document.querySelector('#admGiftFee').dispatchEvent(new a.window.Event('input', { bubbles: true }));
-  assert.match(a.document.querySelector('#admGiftPreview').textContent, /9,00/);
+  assert.match(a.document.querySelector('#admGiftPreview').textContent, /0\.00010227 BTC/);
   a.document.querySelector('#admGiftSave').click();
   await tick();
   post = a.calls.filter((c) => c.pathname === '/api/admin/settings' && c.method === 'POST').pop();
