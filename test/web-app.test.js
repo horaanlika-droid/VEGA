@@ -467,6 +467,7 @@ test('gift picker lists every brand and updates the form for the selected produc
 test('gift nominal rounds to $10 and calculates a BTC payout', async (t) => {
   const a = await usdtApp(t);
   await pickAssetUi(a, 'GOOGLE_USD');
+  assert.equal(a.document.querySelector('#btnSell span').textContent, 'Продать карту за BTC');
   const units = a.document.querySelector('#inUnits');
   units.value = '37';
   units.dispatchEvent(new a.window.Event('input', { bubbles: true }));

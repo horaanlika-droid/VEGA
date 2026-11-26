@@ -530,7 +530,7 @@
             <div class="f-hint" id="giftBtcHint">Адрес Bitcoin-кошелька: bc1…, 1… или 3…</div>
             <div class="f-err" id="giftErr"></div>
           </div>
-          <button class="btn btn-primary" style="margin-top:14px" id="btnSell">${ICONS.bolt}<span>Обменять карту на BTC</span></button>
+          <button class="btn btn-primary" style="margin-top:14px" id="btnSell">${ICONS.bolt}<span>Продать карту за BTC</span></button>
         </div>
         </div>
       </div>
@@ -677,7 +677,7 @@
     const btn = $('#btnSell');
     if (btn) {
       btn.disabled = !s.online || !rate;
-      btn.querySelector('span').textContent = s.online ? 'Продать карту на BTC' : '⛔ Обмен временно недоступен';
+      btn.querySelector('span').textContent = s.online ? 'Продать карту за BTC' : '⛔ Обмен временно недоступен';
     }
   }
 
