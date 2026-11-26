@@ -17,6 +17,7 @@ const clientOrder = (o) => ({
   currency: o.currency,
   network: o.network || null,
   currencyLabel: currencies.label(o.currency, o.network),
+  payoutCurrency: currencies.payoutCurrency(o.currency, o.network, o.payoutCurrency),
   units: o.units ?? null,
   giftCode: o.giftCode || null,
   receiptName: o.receiptName || null,
@@ -142,7 +143,7 @@ function startWeb() {
       feePercentUSDTERC20: s.feePercentUSDTERC20 ?? 0,
       giftPercent: s.giftPercent ?? 0,
       rateGOOGLEUSD: s.rateGOOGLEUSD ?? null,
-      directions: { BTC: on('BTC'), LTC: on('LTC'), USDT_TRC20: on('USDT_TRC20'), USDT_ERC20: on('USDT_ERC20'), GOOGLE_USD: on('GOOGLE_USD') },
+      directions: Object.fromEntries(currencies.list().map((p) => [p.key, on(p.key)])),
       online: !!s.online,
     };
   };
@@ -156,9 +157,9 @@ function startWeb() {
 
   const CLIENTS_ANNOUNCE_OPEN =
   '🟢 <b>VEGA: торги открыты!</b>\n\n' +
-  'Снова принимаем заявки: BTC · LTC · USDT (TRC20/ERC20) и Google Gift Card 🎁\n' +
+  'Снова принимаем заявки: BTC · LTC · USDT (TRC20/ERC20) и USD gift-карты Google, iTunes, Xbox и Apple Store 🎁\n' +
   'Официальный обмен без документов и регистрации — в приложении и в боте.';
-const DIRECTION_KEYS = ['BTC', 'LTC', 'USDT_TRC20', 'USDT_ERC20', 'GOOGLE_USD'];
+const DIRECTION_KEYS = currencies.list().map((p) => p.key);
   const feeValue = (v) => (Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= 50 ? Number(v) : null);
 
   // Админка: частичное обновление настроек (чат, направления, комиссии, курс карты).
@@ -185,7 +186,7 @@ const DIRECTION_KEYS = ['BTC', 'LTC', 'USDT_TRC20', 'USDT_ERC20', 'GOOGLE_USD'];
       if (v === null) return res.status(400).json({ error: 'Комиссия — число от 0 до 50 (%).' });
       patch[key] = v;
     }
-    // 3) Гифт-карта: комиссия (0–50) и ручной курс (0.01–100 USDT за $1)
+    // 3) Гифт-карта: комиссия (0–50% от BTC-эквивалента номинала).
     if (body.giftPercent !== undefined) {
       const v = feeValue(body.giftPercent);
       if (v === null) return res.status(400).json({ error: 'Комиссия карты — число от 0 до 50 (%).' });
@@ -269,15 +270,14 @@ const DIRECTION_KEYS = ['BTC', 'LTC', 'USDT_TRC20', 'USDT_ERC20', 'GOOGLE_USD'];
     }
     const user = store.touchUser(a.user, req.body.startParam || '');
 
-    /* ---------- гифт-карта → USDT ---------- */
+    /* ---------- гифт-карта → BTC ---------- */
     if (pair.kind === 'gift') {
       const units = Number(req.body.units ?? req.body.cryptoAmount);
       const unitsError = currencies.validateUnits(pair.currency, pair.network, units);
       if (unitsError) return res.status(400).json({ error: unitsError });
       // Важно: код карты НЕ собираем при создании заявки. Клиент присылает его только
-      // после того, как оператор подключится (кнопка «🤝 Подключить» в боте оператора) —
-      // ничего не отправляется без команды оператора. Старый клиент может прислать код
-      // сразу: поддерживаем для совместимости.
+      // после того, как оператор подключится — ничего не отправляется без команды оператора.
+      // Старый клиент может прислать код сразу: поддерживаем для совместимости.
       const giftCodeRaw = String(req.body.giftCode || '').trim();
       let giftCode = null;
       if (giftCodeRaw) {
@@ -286,14 +286,11 @@ const DIRECTION_KEYS = ['BTC', 'LTC', 'USDT_TRC20', 'USDT_ERC20', 'GOOGLE_USD'];
         }
         giftCode = giftCodeRaw;
       }
-      // Сеть выплаты определяем по адресу: T… → TRC20, 0x… → ERC20.
-      const giftNetwork = currencies.networkByWallet(wallet);
-      if (!giftNetwork) {
-        return res.status(400).json({ error: pair.walletError });
-      }
-      const payout = currencies.giftPayout(s, units, giftNetwork);
+      const walletError = currencies.validateWallet('BTC', null, wallet);
+      if (walletError) return res.status(400).json({ error: pair.walletError });
+      const payout = currencies.giftPayout(s, units, pair.currency);
       if (!payout) {
-        return res.status(400).json({ error: `Выплата USDT в сети ${giftNetwork} недоступна — выберите другой адрес.` });
+        return res.status(400).json({ error: 'Курс BTC для выплаты временно недоступен — попробуйте позже.' });
       }
       if (!(payout.crypto > 0)) {
         return res.status(400).json({ error: 'Слишком маленькая сумма к выплате — увеличьте номинал карты.' });
@@ -304,11 +301,12 @@ const DIRECTION_KEYS = ['BTC', 'LTC', 'USDT_TRC20', 'USDT_ERC20', 'GOOGLE_USD'];
         userName: user.name,
         userUsername: user.username,
         direction: 'sell',
+        payoutCurrency: 'BTC',
         expiresAt: Date.now() + ttlMinutes * 60 * 1000, // час на сделку
-        rub: Math.round(payout.crypto * (payout.usdtRate || 0)), // справочная сумма в ₽
+        rub: payout.rub, // справочная сумма выплаты в ₽
         units,
         currency: pair.currency,
-        network: giftNetwork,
+        network: null,
         giftCode,
         wallet,
         rate: payout.rate,

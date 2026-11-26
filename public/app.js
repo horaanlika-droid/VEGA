@@ -33,15 +33,27 @@
   // dir — выбранное направление (ключ из /api/settings → rates[]).
   // screen — на каком под-экране обмена мы находимся: «picker» (выбор активов) или «form» (форма обмена).
   // sheet — какая шторка открыта (crypto | gift) или null.
-  const S = { settings: null, me: null, orders: [], order: null, tab: 'exchange', dir: 'BTC', isDemo: false, support: [], screen: 'picker', sheet: null, giftRules: false, adminOpen: false, admin: null };
+  const S = { settings: null, me: null, orders: [], order: null, tab: 'exchange', dir: 'BTC', isDemo: false, support: [], screen: 'picker', sheet: null, giftRules: false, giftRuleKey: null, adminOpen: false, admin: null };
 
   // Резервный реестр направлений: нужен, если сервер старой версии не прислал rates.
+  const giftFallback = (key, label, symbol, coin) => ({
+    key, direction: 'sell', currency: key, network: null, kind: 'gift', payoutCurrency: 'BTC', payoutDecimals: 8,
+    label, symbol, coin, decimals: 0, display: 0, unit: 'USD', step: 10, minUnits: 10,
+    walletHint: 'Адрес Bitcoin-кошелька (bc1… / 1… / 3…)',
+    walletPattern: '^(bc1[a-zA-HJ-NP-Z0-9]{25,62}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$',
+    walletError: 'Проверьте адрес Bitcoin-кошелька — он выглядит некорректно.',
+    infoNote: 'Принимаются только подарочные карты США в USD ($).', currencyNote: 'Нужна карта региона США в USD ($).',
+    rate: null, enabled: true,
+  });
   const FALLBACK_DIRS = [
     { key: 'BTC', currency: 'BTC', network: null, label: 'BTC', symbol: '₿', coin: 'btc', decimals: 8, display: null, walletHint: 'Адрес BTC-кошелька (bc1… / 1… / 3…)', walletPattern: '^(bc1[a-zA-HJ-NP-Z0-9]{25,62}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$', walletError: 'Проверьте адрес BTC-кошелька — он выглядит некорректно.', rate: null, enabled: true },
     { key: 'LTC', currency: 'LTC', network: null, label: 'LTC', symbol: 'Ł', coin: 'ltc', decimals: 8, display: null, walletHint: 'Адрес LTC-кошелька (ltc1… / L… / M…)', walletPattern: '^(ltc1[a-zA-HJ-NP-Z0-9]{25,62}|[LM3][a-km-zA-HJ-NP-Z1-9]{25,34})$', walletError: 'Проверьте адрес LTC-кошелька — он выглядит некорректно.', rate: null, enabled: true },
     { key: 'USDT_TRC20', currency: 'USDT', network: 'TRC20', label: 'USDT TRC20', symbol: '₮', coin: 'usdt', decimals: 6, display: 2, walletHint: 'Адрес USDT TRC20 (T…, 34 символа)', walletPattern: '^T[1-9A-HJ-NP-Za-km-z]{33}$', walletError: 'Это не похоже на адрес USDT в сети TRC20 — он начинается с T и содержит 34 символа.', networkHint: 'сеть TRON · низкая комиссия, зачисление 1–3 мин', rate: null, enabled: true },
     { key: 'USDT_ERC20', currency: 'USDT', network: 'ERC20', label: 'USDT ERC20', symbol: '₮', coin: 'usdt', decimals: 6, display: 2, walletHint: 'Адрес USDT ERC20 (0x + 40 символов)', walletPattern: '^0x[0-9a-fA-F]{40}$', walletError: 'Это не похоже на адрес USDT в сети ERC20 — нужен 0x и 40 hex-символов.', networkHint: 'сеть Ethereum · высокая комиссия сети, зачисление 5–15 мин', rate: null, enabled: true },
-    { key: 'GOOGLE_USD', direction: 'sell', currency: 'GOOGLE_USD', network: null, kind: 'gift', label: 'Google Gift Card', symbol: '🎁', coin: 'google', decimals: 0, display: 0, unit: 'USD', step: 10, minUnits: 10, walletHint: 'Адрес USDT-кошелька (T… или 0x…)', walletPattern: '^(T[1-9A-HJ-NP-Za-km-z]{33}|0x[0-9a-fA-F]{40})$', walletError: 'Укажите адрес USDT: TRC20 начинается с T (34 символа), ERC20 — 0x и 40 hex-символов.', rate: null, enabled: true },
+    giftFallback('GOOGLE_USD', 'Google Gift Card', '🎁', 'google'),
+    giftFallback('ITUNES_USD', 'iTunes Gift Card', '🎵', 'itunes'),
+    giftFallback('XBOX_USD', 'Xbox Gift Card', '🎮', 'xbox'),
+    giftFallback('APPLE_STORE_USD', 'Apple Store Gift Card', '🍎', 'apple'),
   ];
 
   // Все направления с итоговым курсом; старый формат settings.rateBTC/LTC тоже поддерживается.
@@ -59,32 +71,22 @@
   // Карта (продажа) клиенту видна только с настроенным курсом.
   const eligible = (d) => d.enabled !== false && (isGiftDir(d) ? Number(d.rate) > 0 : true);
   const available = () => dirs().filter(eligible);
-  // Направления покупки (₽ → крипта) и продажи (гифт-карта → USDT).
+  // Направления покупки (₽ → крипта) и продажи (гифт-карта → BTC).
   const buyDirs = () => available().filter((d) => !isGiftDir(d));
   const sellDirs = () => available().filter(isGiftDir);
-  const currentSellDir = () => sellDirs()[0] || dirs().find(isGiftDir) || FALLBACK_DIRS[4];
+  const currentSellDir = () => sellDirs()[0] || dirs().find(isGiftDir) || FALLBACK_DIRS.find(isGiftDir);
 
-  // Сеть выплаты USDT определяем по адресу клиента.
-  function usdtNetworkOf(address) {
-    const a = String(address || '').trim();
-    if (/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(a)) return 'TRC20';
-    if (/^0x[0-9a-fA-F]{40}$/.test(a)) return 'ERC20';
-    return null;
-  }
-  // Выплата карты идёт в USDT — проверяем лишь то, что сеть включена оператором.
-  function usdtNetEnabled(network) {
-    const key = network === 'ERC20' ? 'USDT_ERC20' : 'USDT_TRC20';
-    const d = dirs().find((x) => x.key === key);
-    return d && d.enabled !== false;
-  }
-  // Сколько USDT даём за карту номиналом units $: курс карты (USDT за $1) не зависит от сети.
-  function giftPayout(units, network) {
-    const dir = isGiftDir(currentDir()) ? currentDir() : currentSellDir();
+  // Сколько BTC даём за карту номиналом units $; курс в BTC за $1 приходит с сервера.
+  function giftPayout(units, product = null) {
+    const dir = product || (isGiftDir(currentDir()) ? currentDir() : currentSellDir());
     const giftRate = Number(dir && dir.rate) || 0;
     if (!(giftRate > 0)) return null;
-    // Нужно, чтобы выплата в этой сети была включена.
-    if (!usdtNetEnabled(network)) return null;
-    return floorTo((Number(units) || 0) * giftRate, 2);
+    return floorTo((Number(units) || 0) * giftRate, 8);
+  }
+  function giftWalletValid(address, product = null) {
+    const dir = product || (isGiftDir(currentDir()) ? currentDir() : currentSellDir());
+    const pattern = dir && dir.walletPattern;
+    return !!pattern && new RegExp(pattern).test(String(address || '').trim());
   }
   function currentDir() {
     const all = dirs();
@@ -107,9 +109,17 @@
     const d = dir.display;
     return Number.isFinite(Number(d)) && d !== null && d !== undefined ? Number(d) : decimalsOf(dir);
   }
+  function giftDirOfOrder(o) {
+    const currency = String(o && o.currency || '').toUpperCase();
+    return dirs().find((d) => isGiftDir(d) && d.currency === currency) ||
+      FALLBACK_DIRS.find((d) => isGiftDir(d) && d.currency === currency) ||
+      dirs().find(isGiftDir) || FALLBACK_DIRS.find(isGiftDir);
+  }
+  const giftLabelOf = (o) => giftDirOfOrder(o)?.label || o.currencyLabel || 'Gift Card';
   function dirLabel(o) {
     const d = dirs().find((x) => x.currency === o.currency && (x.network || null) === (o.network || null));
     if (d) return d.label;
+    if (isGiftOrder(o)) return giftLabelOf(o);
     return o.currencyLabel || [o.currency, o.network].filter(Boolean).join(' ');
   }
   const floorTo = (v, dec) => Math.floor(Number(v) * 10 ** dec + 1e-6) / 10 ** dec;
@@ -117,14 +127,20 @@
   function dirOfOrder(o) {
     const d = dirs().find((x) => x.currency === o.currency && (x.network || null) === (o.network || null));
     if (d) return d;
-    // Гифт-карта: в заявке сеть выплаты (TRC20/ERC20), а направление одно — Google Gift Card.
-    if (isGiftOrder(o)) return dirs().find(isGiftDir) || FALLBACK_DIRS[4];
+    // Старые заявки могут хранить network TRC20/ERC20; продукт определяем по currency.
+    if (isGiftOrder(o)) return giftDirOfOrder(o);
     return FALLBACK_DIRS.find((x) => x.currency === o.currency && (x.network || null) === (o.network || null)) || { coin: String(o.currency || '').toLowerCase(), symbol: o.currency === 'BTC' ? '₿' : o.currency === 'LTC' ? 'Ł' : '₮', decimals: 8, display: o.currency === 'USDT' ? 2 : 8 };
   }
   const currenciesDecimals = (o) => displayOf(dirOfOrder(o));
-  // Сумма к выплате для показа клиенту: у гифт-карты всегда USDT, иначе — валюта направления.
+  const giftCurrencyOf = (o) => o.payoutCurrency || (o.network ? 'USDT' : 'BTC');
+  const giftPayoutText = (o) => {
+    const currency = giftCurrencyOf(o);
+    const suffix = currency === 'USDT' && o.network ? ` (${o.network})` : '';
+    return `${fmtCrypto(o.crypto, currency, currency === 'USDT' ? 2 : 8)}${suffix}`;
+  };
+  // Сумма к выплате для показа клиенту.
   const cryptoOf = (o) => (isGiftOrder(o)
-    ? fmtCrypto(o.crypto, 'USDT', 2)
+    ? giftPayoutText(o)
     : fmtCrypto(o.crypto, o.currency, currenciesDecimals(o)));
 
   const STATUS = {
@@ -281,7 +297,7 @@
   // ---------- Выбор актива: экран «Выбор активов для обмена» + нижние шторки ----------
   // Обмен открывается на экране выбора активов (криптовалюта / подарочные карты).
   // Сам выбор актива — всегда через нижнюю шторку: и для криптовалюты, и для подарочных карт.
-  // Пока принимаем только один вид карт — Google Gift Card.
+  // Для всех поддерживаемых карт используются общие правила: США, USD, $10 и кратно $10.
   let sheetCloseTimer = null;
   let sheetFrames = [];
   let rulesCloseTimer = null;
@@ -306,7 +322,7 @@
             const sub = off
               ? 'Временно недоступно'
               : kind === 'gift'
-                ? `1 $ = ${Number(d.rate) || 0} USDT · выплата в USDT`
+                ? `1 $ = ${fmtCrypto(d.rate, 'BTC', 8)} · выплата в BTC`
                 : (d.network ? `Сеть ${d.network} · комиссию назовёт оператор` : 'Стоимость назовёт оператор после заявки');
             return `<button class="sheet-row${on ? ' on' : ''}${off ? ' off' : ''}" data-key="${esc(d.key)}" role="option" aria-selected="${on ? 'true' : 'false'}"${off ? ' aria-disabled="true"' : ''}>
               <span class="coin-ic ${esc(d.coin)}">${coinInner(d)}</span>
@@ -318,7 +334,7 @@
       : '<div class="sheet-empty">Сейчас нет доступных направлений</div>';
     const foot = $('#sheetFoot');
     if (foot) {
-      foot.textContent = kind === 'gift' ? 'Пока принимаем только Google Gift Card — другие карты совсем скоро' : '';
+      foot.textContent = kind === 'gift' ? 'Принимаются карты США в USD · выплата в BTC' : '';
       foot.classList.toggle('hidden', !foot.textContent);
     }
     list.querySelectorAll('.sheet-row').forEach((b) =>
@@ -447,8 +463,8 @@
           <div class="picker-group">
             <div class="picker-group-label">ПОДАРОЧНЫЕ КАРТЫ</div>
             <button class="group-card${(!S.settings.online || !giftOn) ? ' off' : ''}" data-group="gift">
-              <span class="coin-ic google group-ic">${GIFT_ICON}</span>
-              <span class="group-text"><b>Подарочные карты</b><i>Google Gift Card — выплата в USDT</i></span>
+              <span class="coin-ic gift group-ic">🎁</span>
+              <span class="group-text"><b>Подарочные карты</b><i>${esc(sellDirs().map((d) => d.label).join(' · ') || 'Google · iTunes · Xbox · Apple Store')} — выплата в BTC</i></span>
               <span class="group-chev">${ICONS.right}</span>
             </button>
           </div>
@@ -481,30 +497,30 @@
         </div>
         <div id="giftForm" class="hidden">
           <div class="card">
-            <div class="card-title">Google Gift Card</div>
+            <div class="card-title" id="giftTitle">${esc(sell.label)}</div>
             <div class="f-label"><span>Номинал карты</span><span id="giftRule"></span></div>
             <div class="seg gift-nom" id="segNom"></div>
-            <div class="f-box" style="margin-top:10px"><div class="coin-ic google">${GIFT_ICON}</div><input id="inUnits" type="number" inputmode="numeric" placeholder="10" min="${minUnits}" step="${step}" value="10"></div>
+            <div class="f-box" style="margin-top:10px"><div class="coin-ic ${esc(sell.coin)}" id="giftCardIcon">${coinInner(sell)}</div><input id="inUnits" type="number" inputmode="numeric" placeholder="10" min="${minUnits}" step="${step}" value="10"></div>
             <div class="f-hint">Введите номинал карты: от $${minUnits}, кратно $${step}</div>
             <div class="f-sep"><div class="arr">${ICONS.down}</div></div>
             <div class="f-label"><span>Вы получаете</span><span id="giftLimits"></span></div>
-            <div class="f-box"><div class="coin-ic usdt">₮</div><input id="outUsdt" type="text" readonly placeholder="—"></div>
+            <div class="f-box"><div class="coin-ic btc">₿</div><input id="outBtc" type="text" readonly placeholder="—"></div>
             <div class="f-meta" id="giftMeta"></div>
-            <div class="info-note" style="margin-top:10px">⏱ На сделку даётся <b>1 час</b>: создайте заявку → <b>дождитесь подключения оператора</b> → отправьте код <b>только после его команды</b> — оператор проверит карту и выплатит USDT.</div>
+            <div class="info-note" style="margin-top:10px">⏱ На сделку даётся <b>1 час</b>: создайте заявку → <b>дождитесь подключения оператора</b> → отправьте код <b>только после его команды</b> — оператор проверит карту и выплатит BTC.</div>
           </div>
           <div class="card">
             <div class="card-title">Где взять карту</div>
-            <div class="info-note" id="giftInfo">Карту можно купить на любом маркетплейсе — Яндекс Маркет, Ozon, Wildberries и т. д. Выбирайте карту именно в <b>USD</b> (долларах): карты в рублях и других валютах не принимаются.</div>
-            <div class="info-warn">⚠️ Проверьте валюту карты: нужен номинал в <b>USD ($)</b>.</div>
-            <div class="info-note" style="margin-top:10px">🛡 <b>Минимальный цифровой след</b><br>Карту можно купить за <b>наличные</b> — она не привязана к вашему банковскому счёту и паспорту. Мы не запрашиваем документы и регистрацию: только код карты и USDT-адрес. Выплата идёт прямо на ваш кошелёк — без банков, бирж и посредников. Меньше точек, где фиксируются ваши данные, — меньше цифрового следа.</div>
+            <div class="info-note" id="giftInfo">Карту можно купить на любом маркетплейсе — Яндекс Маркет, Ozon, Wildberries и т. д. Нужна карта региона <b>США</b> с номиналом в <b>USD</b>; карты других регионов и валют не принимаются.</div>
+            <div class="info-warn">⚠️ Проверьте регион карты: США, валюта номинала — <b>USD ($)</b>.</div>
+            <div class="info-note" style="margin-top:10px">🛡 <b>Минимальный цифровой след</b><br>Карту можно купить за <b>наличные</b> — она не привязана к вашему банковскому счёту и паспорту. Мы не запрашиваем документы и регистрацию: только код карты и Bitcoin-адрес. Выплата идёт прямо на ваш кошелёк — без банков, бирж и посредников. Меньше точек, где фиксируются ваши данные, — меньше цифрового следа.</div>
           </div>
           <div class="card">
-            <div class="card-title">Кошелёк для выплаты USDT</div>
-            <div class="f-box"><div class="coin-ic usdt">₮</div><input id="inUsdtWallet" placeholder="T… (TRC20) или 0x… (ERC20)" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
-            <div class="f-hint" id="giftNetHint">Сеть определим по адресу: TRC20 начинается с T, ERC20 — с 0x</div>
+            <div class="card-title">Bitcoin-кошелёк для выплаты BTC</div>
+            <div class="f-box"><div class="coin-ic btc">₿</div><input id="inBtcWallet" placeholder="bc1… / 1… / 3…" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+            <div class="f-hint" id="giftBtcHint">Адрес Bitcoin-кошелька: bc1…, 1… или 3…</div>
             <div class="f-err" id="giftErr"></div>
           </div>
-          <button class="btn btn-primary" style="margin-top:14px" id="btnSell">${ICONS.bolt}<span>Обменять карту на USDT</span></button>
+          <button class="btn btn-primary" style="margin-top:14px" id="btnSell">${ICONS.bolt}<span>Обменять карту на BTC</span></button>
         </div>
         </div>
       </div>
@@ -550,7 +566,7 @@
         unitsInput.value = String(n);
         renderFormMeta();
       });
-      $('#inUsdtWallet').addEventListener('input', renderFormMeta);
+      $('#inBtcWallet').addEventListener('input', renderFormMeta);
       $('#btnSell').addEventListener('click', submitGiftOrder);
     }
     setScreen(S.screen || 'picker');
@@ -565,7 +581,7 @@
     const dir = currentDir();
     const all = available();
     syncPickerAvailability();
-    // Гифт-карта — отдельная форма: номинал в $ → USDT, без полей рублей и курса.
+    // Гифт-карта — отдельная форма: номинал в $ → BTC, без полей рублей и курса.
     const giftMode = isGiftDir(dir);
     if ($('#buyForm')) $('#buyForm').classList.toggle('hidden', giftMode);
     if ($('#giftForm')) $('#giftForm').classList.toggle('hidden', !giftMode);
@@ -604,7 +620,7 @@
     btn.querySelector('span').textContent = s.online ? 'Отправить заявку' : '⛔ Обмен временно недоступен';
   }
 
-  // Гифт-карта: номинал в $ → сколько USDT получим и в какой сети.
+  // Гифт-карта: номинал в $ → выплата BTC по текущему курсу BTC/USD.
   function renderGiftMeta() {
     const units = $('#inUnits');
     if (!units) return;
@@ -613,18 +629,16 @@
     const step = Number(dir && dir.step) || 10;
     const minUnits = Number(dir && dir.minUnits) || step;
     const rate = Number(dir && dir.rate) || 0;
+    const title = $('#giftTitle');
+    if (title && dir) title.textContent = dir.label;
+    const cardIcon = $('#giftCardIcon');
+    if (cardIcon && dir) { cardIcon.className = 'coin-ic ' + dir.coin; cardIcon.innerHTML = coinInner(dir); }
     const nominal = Math.max(0, Math.floor((Number(units.value) || 0) / step) * step);
-    const wallet = ($('#inUsdtWallet') && $('#inUsdtWallet').value) || '';
-    const network = usdtNetworkOf(wallet);
-    const payout = network ? giftPayout(nominal, network) : giftPayout(nominal, 'TRC20');
-    const out = $('#outUsdt');
-    const amount = (v) => (Math.round(v * 100) / 100).toFixed(2).replace(/\.?0+$/, '');
-    if (out) {
-      // Показываем ровную цену: $10 → 10 USDT при 0% комиссии (без лишних нулей).
-      out.value = nominal && payout
-        ? `${amount(payout)} USDT${network ? ' · ' + network : ''}`
-        : '—';
-    }
+    const wallet = ($('#inBtcWallet') && $('#inBtcWallet').value) || '';
+    const payout = giftPayout(nominal);
+    const out = $('#outBtc');
+    const amount = (v) => fmtCrypto(v, 'BTC', 8);
+    if (out) out.value = nominal && payout ? amount(payout) : '—';
     const rule = $('#giftRule');
     if (rule) rule.textContent = `от $${minUnits} · кратно $${step}`;
     const info = $('#giftInfo');
@@ -632,33 +646,38 @@
     const limits = $('#giftLimits');
     if (limits) {
       limits.textContent = rate
-        ? `${rate} USDT за $1 номинала`
+        ? `${fmtCrypto(rate, 'BTC', 8)} за $1 номинала`
         : 'направление недоступно';
     }
-    const hint = $('#giftNetHint');
+    const hint = $('#giftBtcHint');
     if (hint) {
-      hint.textContent = network
-        ? `Сеть ${network}: выплата ${payout ? amount(payout) : '—'} USDT за $${nominal}`
-        : 'Сеть определим по адресу: TRC20 начинается с T, ERC20 — с 0x';
+      hint.textContent = wallet
+        ? giftWalletValid(wallet)
+          ? `Выплата: ${payout ? amount(payout) : '—'} за $${nominal}`
+          : 'Проверьте Bitcoin-адрес: bc1…, 1… или 3…'
+        : 'Адрес Bitcoin-кошелька: bc1…, 1… или 3…';
     }
     const meta = $('#giftMeta');
     if (meta) {
       meta.innerHTML = `
         <div class="row"><span>Номинал карты</span><b>$${nominal}</b></div>
-        <div class="row"><span>Курс</span><b>1 $ = ${rate ? rate + ' USDT' : '—'}</b></div>
-        ${network ? `<div class="row"><span>Сеть выплаты</span><b>${esc(network)}</b></div>` : ''}
-        <div class="row"><span>К выплате</span><b>${payout ? amount(payout) + ' USDT' : '—'}</b></div>`;
+        <div class="row"><span>Курс</span><b>1 $ = ${rate ? fmtCrypto(rate, 'BTC', 8) : '—'}</b></div>
+        <div class="row"><span>К выплате</span><b>${payout ? amount(payout) : '—'}</b></div>`;
     }
     const btn = $('#btnSell');
     if (btn) {
       btn.disabled = !s.online || !rate;
-      btn.querySelector('span').textContent = s.online ? 'Продать карту' : '⛔ Обмен временно недоступен';
+      btn.querySelector('span').textContent = s.online ? 'Продать карту на BTC' : '⛔ Обмен временно недоступен';
     }
   }
 
   function giftRulesOpen() {
     const dlg = $('#giftRules');
     if (!dlg) return;
+    const dir = isGiftDir(currentDir()) ? currentDir() : currentSellDir();
+    S.giftRuleKey = dir && dir.key;
+    const brand = $('#giftRulesBrand');
+    if (brand && dir) brand.textContent = dir.label;
     if (rulesCloseTimer) { clearTimeout(rulesCloseTimer); rulesCloseTimer = null; }
     dlg.classList.remove('hidden');
     dlg.setAttribute('aria-hidden', 'false');
@@ -670,6 +689,7 @@
   function giftRulesClose() {
     const dlg = $('#giftRules');
     S.giftRules = false;
+    S.giftRuleKey = null;
     document.body.classList.remove('sheet-lock');
     rulesFrames.forEach((f) => { try { cancelAnimationFrame(f); } catch (e) {} });
     rulesFrames = [];
@@ -690,14 +710,13 @@
     const step = Number(dir && dir.step) || 10;
     const minUnits = Number(dir && dir.minUnits) || step;
     const units = Math.floor((Number($('#inUnits').value) || 0) / step) * step;
-    const wallet = ($('#inUsdtWallet').value || '').trim();
-    const network = usdtNetworkOf(wallet);
+    const wallet = ($('#inBtcWallet').value || '').trim();
     if (!s.online) return (err.textContent = '⛔ Обмен временно недоступен — загляните позже.');
     if (!(Number(dir.rate) > 0)) return (err.textContent = 'Продажа карт сейчас недоступна.');
     if (!units || units < minUnits) return (err.textContent = `Минимальный номинал — $${minUnits}, сумма кратна $${step}.`);
-    if (!network) return (err.textContent = 'Укажите адрес USDT: TRC20 начинается с T, ERC20 — с 0x (40 hex).');
-    const payout = giftPayout(units, network);
-    if (!(payout > 0)) return (err.textContent = 'Не удалось рассчитать выплату — проверьте адрес и номинал.');
+    if (!giftWalletValid(wallet, dir)) return (err.textContent = 'Укажите корректный Bitcoin-адрес: bc1…, 1… или 3….');
+    const payout = giftPayout(units, dir);
+    if (!(payout > 0)) return (err.textContent = 'Не удалось рассчитать выплату — проверьте курс и номинал.');
     haptic('medium');
     giftRulesOpen();
   }
@@ -706,20 +725,22 @@
   async function createGiftOrder() {
     const s = S.settings;
     const err = $('#giftErr');
-    const dir = isGiftDir(currentDir()) ? currentDir() : currentSellDir();
+    const dir = dirs().find((d) => d.key === S.giftRuleKey) || (isGiftDir(currentDir()) ? currentDir() : currentSellDir());
     const step = Number(dir && dir.step) || 10;
     const minUnits = Number(dir && dir.minUnits) || step;
     const units = Math.floor((Number($('#inUnits').value) || 0) / step) * step;
-    const wallet = ($('#inUsdtWallet').value || '').trim();
-    const network = usdtNetworkOf(wallet);
-    if (!s.online || !dir) return;
+    const wallet = ($('#inBtcWallet').value || '').trim();
+    if (!s.online || !eligible(dir) || !giftWalletValid(wallet, dir) || !units || units < minUnits) {
+      giftRulesClose();
+      return renderGiftMeta();
+    }
     const btn = $('#giftRulesConfirm');
     btn.disabled = true;
     haptic('medium');
     try {
       const r = await api('/api/orders', {
         method: 'POST',
-        body: { units, wallet, currency: 'GOOGLE_USD', startParam },
+        body: { units, wallet, currency: dir.currency, startParam },
       });
       S.order = r.order;
       S.orders.unshift(r.order);
@@ -783,8 +804,9 @@
     return `<span class="chip" style="color:${m.color};background:${m.color}1a;border:1px solid ${m.color}55">${text}</span>`;
   }
 
-  // Гифт-заявка: клиент отдал код карты и ждёт выплату USDT.
-  const isGiftOrder = (o) => !!o && (o.direction === 'sell' || o.currency === 'GOOGLE_USD');
+  // Гифт-заявка: клиент отдал код карты и ждёт выплату BTC (старые заявки сохраняют USDT).
+  const GIFT_KEYS = new Set(['GOOGLE_USD', 'ITUNES_USD', 'XBOX_USD', 'APPLE_STORE_USD']);
+  const isGiftOrder = (o) => !!o && (o.direction === 'sell' || GIFT_KEYS.has(String(o.currency || '').toUpperCase()));
   const giftNominal = (o) => Number(o.units) || 0;
 
   // Сколько осталось до конца срока (1 час на сделку).
@@ -802,13 +824,13 @@
 
   function renderGiftStage(o) {
     const box = $('#exOrder');
-    const payout = `${fmtCrypto(o.crypto, 'USDT', 2)} (${o.network || 'USDT'})`;
+    const payout = giftPayoutText(o);
     if (o.status === 'new' && o.giftCode) {
       // Совместимость со старыми заявками, где код был указан при создании.
       box.innerHTML = `
         <div class="card stage">
           ${chip('details')}
-          <div class="pay-dir">${ICONS.swap}<span>Google Gift Card <b>$${giftNominal(o)}</b> → ${payout}</span></div>
+          <div class="pay-dir">${ICONS.swap}<span>${esc(giftLabelOf(o))} <b>$${giftNominal(o)}</b> → ${payout}</span></div>
           <div class="stage-title">Подтвердите передачу карты</div>
           <div class="stage-sub">Заявка <b>#${o.id}</b>. Проверьте код — он уйдёт оператору, как только вы нажмёте «Я оплатил».</div>
           <div class="req-box" id="giftCodeBox">Код карты: ${esc(o.giftCode)}</div>
@@ -838,7 +860,7 @@
         <div class="card stage">
           <div class="spinner-wrap"><div class="spinner"></div><div class="spinner-ic">🤝</div></div>
           ${chip('new', 'Ожидаем оператора')}
-          <div class="pay-dir">${ICONS.swap}<span>Google Gift Card <b>$${giftNominal(o)}</b> → ${payout}</span></div>
+          <div class="pay-dir">${ICONS.swap}<span>${esc(giftLabelOf(o))} <b>$${giftNominal(o)}</b> → ${payout}</span></div>
           <div class="stage-title">Ожидаем подключения оператора</div>
           <div class="stage-sub">Заявка <b>#${o.id}</b> передана оператору.<br>Обычно это занимает несколько минут — <b>не закрывайте приложение</b>.</div>
           <div class="note">${ttlText(o)}<br><b>Ничего не отправляйте и никому не сообщайте код карты</b>, пока оператор не подключится к заявке и не попросит его.</div>
@@ -852,10 +874,10 @@
       box.innerHTML = `
         <div class="card stage">
           ${chip('details', 'Оператор на связи')}
-          <div class="pay-dir">${ICONS.swap}<span>Google Gift Card <b>$${giftNominal(o)}</b> → ${payout}</span></div>
+          <div class="pay-dir">${ICONS.swap}<span>${esc(giftLabelOf(o))} <b>$${giftNominal(o)}</b> → ${payout}</span></div>
           <div class="stage-title">Оператор на связи</div>
-          <div class="stage-sub">Оператор подключился к заявке <b>#${o.id}</b> и ждёт код карты.<br>Введите код Google Gift Card номиналом <b>$${giftNominal(o)}</b>:</div>
-          <div class="f-box" style="margin-top:12px"><div class="coin-ic google">${GIFT_ICON}</div><input id="inGiftSendCode" placeholder="Например: XXXX-XXXX-XXXX-XXXX" autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+          <div class="stage-sub">Оператор подключился к заявке <b>#${o.id}</b> и ждёт код карты.<br>Введите код карты ${esc(giftLabelOf(o))} номиналом <b>$${giftNominal(o)}</b>:</div>
+          <div class="f-box" style="margin-top:12px"><div class="coin-ic ${esc(giftDirOfOrder(o).coin)}">${coinInner(giftDirOfOrder(o))}</div><input id="inGiftSendCode" placeholder="Например: XXXX-XXXX-XXXX-XXXX" autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off"></div>
           <div class="f-err" id="giftSendErr"></div>
           <div class="note">${ttlText(o)}<br>Код увидит только оператор. Не сообщайте его больше никому — ни в поддержке, ни в личных сообщениях.</div>
           <button class="btn btn-primary" style="margin-top:14px" id="btnGiftSend">${ICONS.check}<span>Отправить код оператору</span></button>
@@ -893,7 +915,7 @@
         <div class="card stage">
           <div class="spinner-wrap"><div class="spinner"></div><div class="spinner-ic">🔎</div></div>
           <div class="stage-title">Карта на проверке</div>
-          <div class="stage-sub">Оператор проверяет Google Gift Card на <b>$${giftNominal(o)}</b> и валюту (<b>USD</b>).<br>Как только всё подтвердится — пришлём ${payout} на ваш кошелёк. Обычно 5–15 минут.</div>
+          <div class="stage-sub">Оператор проверяет ${esc(giftLabelOf(o))} на <b>$${giftNominal(o)}</b>, регион (<b>США</b>) и валюту (<b>USD</b>).<br>Как только всё подтвердится — пришлём ${payout} на ваш кошелёк. Обычно 5–15 минут.</div>
           <div class="req-box">Код карты: ${esc(o.giftCode || '—')}</div>
           <div class="note">Не передавайте код никому, кроме поддержки VEGA. Если карта окажется недействительной — заявка будет отклонена.</div>
         </div>`;
@@ -903,8 +925,8 @@
       box.innerHTML = `
         <div class="card stage">
           <svg class="okmark" viewBox="0 0 100 100"><circle cx="50" cy="50" r="41"/><path d="M32 51l13 13 24-27"/></svg>
-          <div class="stage-title">Карта принята — USDT выплачен</div>
-          <div class="stage-sub">Google Gift Card $${giftNominal(o)} → <b>${payout}</b><br>отправлены на ваш кошелёк. Спасибо, что выбираете VEGA ✦</div>
+          <div class="stage-title">Карта принята — ${esc(giftCurrencyOf(o))} выплачен</div>
+          <div class="stage-sub">${esc(giftLabelOf(o))} $${giftNominal(o)} → <b>${payout}</b><br>отправлены на ваш кошелёк. Спасибо, что выбираете VEGA ✦</div>
           ${o.txUrl ? `
             <div class="tx-box">
               <div class="tx-label">🔗 Транзакция в блокчейне</div>
@@ -1201,7 +1223,7 @@
           <div class="h-ic ${esc(dirOfOrder(o).coin)}">${coinInner(dirOfOrder(o))}${o.network ? `<small>${esc(o.network === 'TRC20' ? 'TRC' : 'ERC')}</small>` : ''}</div>
           <div class="h-main">
             ${isGiftOrder(o)
-              ? `<div class="h-top"><span>$${giftNominal(o)} карта → USDT</span><span>${fmtCrypto(o.crypto, 'USDT', 2)}</span></div>`
+              ? `<div class="h-top"><span>${esc(giftLabelOf(o))} $${giftNominal(o)} → ${esc(giftCurrencyOf(o))}</span><span>${giftPayoutText(o)}</span></div>`
               : `<div class="h-top"><span>₽ → ${esc(dirLabel(o))}</span><span>${o.payRub || o.rub ? fmtRub(o.payRub || o.rub) : cryptoOf(o)}</span></div>`}
             <div class="h-sub"><span>#${o.id}${o.receipt ? ' 🧾' : ''}${o.txUrl ? ' 🔗' : ''} · ${fmtDate(o.createdAt)}</span>${chip(o.status)}</div>
             <div class="h-sub" style="margin-top:2px"><span>${esc(o.wallet.slice(0, 10) + '…' + o.wallet.slice(-6))}</span><b style="color:#9fd8ff">${cryptoOf(o)}</b></div>
@@ -1326,16 +1348,26 @@
     ['USDT_TRC20', 'USDT TRC20', 'TRON · низкая комиссия', 'usdt', '₮'],
     ['USDT_ERC20', 'USDT ERC20', 'Ethereum · надёжная сеть', 'usdt', '₮'],
   ];
-  const GIFT_DIR = [['GOOGLE_USD', 'Google Gift Card', 'приём карт в USD', 'google', GIFT_ICON]];
+  const GIFT_DIR = [
+    ['GOOGLE_USD', 'Google Gift Card', 'США · USD', 'google', GIFT_ICON],
+    ['ITUNES_USD', 'iTunes Gift Card', 'США · USD', 'itunes', '🎵'],
+    ['XBOX_USD', 'Xbox Gift Card', 'США · USD', 'xbox', '🎮'],
+    ['APPLE_STORE_USD', 'Apple Store Gift Card', 'США · USD', 'apple', '🍎'],
+  ];
   const giftRateOf = (fee) => {
+    const A = S.admin || {};
+    const currentRate = Number(A.rateGOOGLEUSD) || 0;
+    const currentFee = Number(A.giftPercent) || 0;
+    if (!(currentRate > 0)) return 0;
+    const spotRate = currentRate / (1 - currentFee / 100);
     const p = Number(fee);
-    const safe = Number.isFinite(p) ? Math.min(Math.max(p, 0), 95) : 0;
-    return Math.round((100 - safe)) / 100;
+    const safe = Number.isFinite(p) ? Math.min(Math.max(p, 0), 50) : 0;
+    return spotRate * (1 - safe / 100);
   };
   const giftPreviewText = (fee) => {
     const rate = giftRateOf(fee);
-    const out = Math.floor(10 * rate * 100 + 1e-6) / 100;
-    return `Карта $10 → ${out.toFixed(2).replace('.', ',')} USDT`;
+    const out = floorTo(10 * rate, 8);
+    return `Карта $10 → ${fmtCrypto(out, 'BTC', 8)}`;
   };
   function syncAdminSession() {
     const A = S.admin || {};
@@ -1402,7 +1434,8 @@
           S.settings = r.settings;
           renderAdminDirs(container, keys);
           renderExchange();
-          toast(next ? `${key === 'GOOGLE_USD' ? 'Карта' : key} включена ✅` : `${key === 'GOOGLE_USD' ? 'Карта' : key} выключена ⛔`);
+          const productLabel = GIFT_DIR.find(([giftKey]) => giftKey === key)?.[1];
+          toast(next ? `${productLabel || key} включена ✅` : `${productLabel || key} выключена ⛔`);
         } catch (e) {
           toast(e.message || 'Не удалось переключить направление');
           btn.disabled = false;

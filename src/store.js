@@ -5,44 +5,52 @@ const currencies = require('./currencies');
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 
-const defaults = () => ({
-  seq: 1,
-  supportSeq: 1,
-  settings: {
+const defaults = () => {
+  const settings = {
     rateBTC: 10250000, // ₽ за 1 BTC (итоговый, с комиссией)
     rateLTC: 9400, // ₽ за 1 LTC (итоговый, с комиссией)
     baseRateBTC: null, // официальный курс BTC без комиссии (авто)
     baseRateLTC: null, // официальный курс LTC без комиссии (авто)
     baseRateUSDT: null, // официальный курс USDT → ₽ (для TRC20 и ERC20)
+    baseRateUSD: null, // официальный курс доллара → ₽, для оценки BTC-выплаты за gift-карты
     feePercent: 2, // комиссия обменника по крипте, % поверх официального курса
     feePercentUSDTTRC20: 4, // комиссия по USDT TRC20 (сеть дешевле, но ликвидность иная)
     feePercentUSDTERC20: 5, // комиссия по USDT ERC20 (дорогие комиссии сети)
     rateUSDTTRC20: 100, // стартовые итоговые курсы для USDT (₽ за 1 USDT)
     rateUSDTERC20: 101,
-    // Google Gift Card: $1 номинала = 1 USDT по умолчанию (1:1), оператор назначает комиссию.
-    giftPercent: 0, // комиссия обменника по картам, % от номинала (0–50). 0 → $1 = 1 USDT
-    rateGOOGLEUSD: 1, // курс: USDT за $1 номинала = (100 − giftPercent) / 100
-    enabled: { BTC: true, LTC: true, USDT_TRC20: true, USDT_ERC20: true, GOOGLE_USD: true },
+    // Все USD gift-карты используют общий BTC/$1 rate и общую комиссию.
+    giftPercent: 0, // комиссия обменника по картам, % от USD-эквивалента (0–50)
+    rateGOOGLEUSD: null, // BTC за $1 номинала (legacy key, shared by gift products)
+    enabled: {
+      BTC: true, LTC: true, USDT_TRC20: true, USDT_ERC20: true,
+      GOOGLE_USD: true, ITUNES_USD: true, XBOX_USD: true, APPLE_STORE_USD: true,
+    },
     rateUpdatedAt: null,
     rateSource: 'manual',
     minRub: 3000,
     maxRub: 300000,
     online: true,
     announcement:
-      '🚀 VEGA официально начинает работу! Принимаем заявки на обмен BTC, LTC и USDT (TRC20/ERC20). Минимальная сумма обмена — от 3 000 ₽.',
+      '🚀 VEGA официально начинает работу! Принимаем BTC, LTC, USDT (TRC20/ERC20) и USD gift-карты Google, iTunes, Xbox и Apple Store. Минимальная сумма обмена — от 3 000 ₽.',
     refPercent: 1,
     operator: '@VEGA_obmen',
     channel: 'https://t.me/VEGA_Official_65',
     chat: 'https://t.me/+tY5b6RUJ0xUwNmNh',
     publicUrl: null,
     botUsername: null,
-  },
-  admins: [], // дополнительные операторы; владельцы задаются через окружение
-  users: {},
-  orders: [],
-  flags: {},
-  support: [], // чат поддержки: { id, userId, from: 'user'|'admin', text, at }
-});
+  };
+  settings.rateGOOGLEUSD = currencies.giftRateFromPercent(settings.giftPercent, settings);
+  return {
+    seq: 1,
+    supportSeq: 1,
+    settings,
+    admins: [], // дополнительные операторы; владельцы задаются через окружение
+    users: {},
+    orders: [],
+    flags: {},
+    support: [], // чат поддержки: { id, userId, from: 'user'|'admin', text, at }
+  };
+};
 
 let db = null;
 let saveTimer = null;
@@ -64,16 +72,13 @@ function load() {
         }
       }
       if (!Number.isFinite(db.supportSeq)) db.supportSeq = (db.support?.length || 0) + 1;
-      // Модель «по умолчанию $1 = 1 USDT, админ назначает комиссию» заменила старые дефолты
-      // (скидка 15% → 0.85). Переводим только нетронутые значения; если оператор задавал свои — не трогаем.
+      // Старый дефолт 15%/0.85 USDT был промо-курсом. Переводим только нетронутые
+      // базы; старые активные заявки сохраняют валюту выплаты по своей сети.
       if (db.settings.giftPercent === 15 && Number(db.settings.rateGOOGLEUSD) === 0.85) {
         db.settings.giftPercent = 0;
-        db.settings.rateGOOGLEUSD = 1;
       }
-      // Ручной курс карты больше не поддерживается: оператор выплачивает вручную,
-      // поэтому курс всегда выводится из комиссии. Заодно «исцеляем» базы, где
-      // курс мог застрять из-за старого ручного ввода.
-      db.settings.rateGOOGLEUSD = currencies.giftRateFromPercent(db.settings.giftPercent);
+      // Курс карты теперь всегда пересчитывается из BTC/USD и комиссии.
+      db.settings.rateGOOGLEUSD = currencies.giftRateFromPercent(db.settings.giftPercent, db.settings);
       for (const o of db.orders || []) {
         if (o.txUrl === undefined) o.txUrl = null;
         if (o.txHash === undefined) o.txHash = null;
@@ -112,7 +117,7 @@ const mutate = (fn) => {
 function publicSettings() {
   const s = db.settings;
   // Клиенту курс покупки крипты не отдаём вообще: сумму в рублях называет оператор в заявке,
-  // клиент соглашается или отказывается. Виден только курс продажи подарочной карты (USDT за $1).
+  // клиент соглашается или отказывается. Для gift-карты виден BTC-курс выплаты за $1.
   return {
     rateBTC: null,
     rateLTC: null,
@@ -186,7 +191,8 @@ function createOrder(o) {
       rub: o.rub,
       currency: o.currency,
       network: o.network || null,
-      direction: o.direction || 'buy', // 'buy' (₽ → крипта) | 'sell' (гифт-карта → USDT)
+      direction: o.direction || 'buy', // 'buy' (₽ → крипта) | 'sell' (гифт-карта → BTC)
+      payoutCurrency: o.payoutCurrency || null, // валюта выплаты по gift-заявке; null у старых заявок определяется по network
       units: o.units ?? null, // номинал подарочной карты, $ (для kind: 'gift')
       giftCode: o.giftCode || null, // код карты (виден только клиенту и оператору)
       receiptName: o.receiptName || null, // скриншот карты из чата

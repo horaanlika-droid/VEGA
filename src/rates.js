@@ -86,7 +86,7 @@ async function fromKrakenCbr() {
 }
 
 // ЦБ РФ: официальный курс доллара. Для USDT это запасной вариант (USDT ≈ USD),
-// для подарочных карт Google — основной (номинал карты указан в долларах).
+// для USD gift-карт — основной (номинал карты указан в долларах).
 async function fromCbrUsd() {
   const cbr = await fetchJson('https://www.cbr-xml-daily.ru/daily_json.js');
   const usd = num(cbr?.Valute?.USD?.Value);
@@ -206,15 +206,25 @@ function applyRates(official) {
     s.baseRateBTC = Math.round(official.btc);
     s.baseRateLTC = Math.round(official.ltc);
     s.baseRateUSDT = Math.round(official.usdt * 100) / 100;
+    s.baseRateUSD = Math.round(official.usd * 100) / 100;
     s.rateBTC = applyFee(official.btc, fee);
     s.rateLTC = applyFee(official.ltc, fee);
     s.rateUSDTTRC20 = applyFee(official.usdt, Number(s.feePercentUSDTTRC20) || 0, 2);
     s.rateUSDTERC20 = applyFee(official.usdt, Number(s.feePercentUSDTERC20) || 0, 2);
-    // Курс карты не зависит от курса доллара: это доля номинала в USDT.
-    s.rateGOOGLEUSD = currencies.giftRateFromPercent(s.giftPercent);
+    // BTC-выплата за карту пересчитывается по официальным BTC/USD и комиссии gift.
+    s.rateGOOGLEUSD = currencies.giftRateFromPercent(s.giftPercent, s);
     s.rateUpdatedAt = Date.now();
     s.rateSource = official.source;
     return s;
+  });
+}
+
+// Пересчёт только курса gift-карт после изменения ручного резервного USDT/USD-курса.
+function recomputeGiftRate() {
+  return store.mutate((db) => {
+    const s = db.settings;
+    s.rateGOOGLEUSD = currencies.giftRateFromPercent(s.giftPercent, s);
+    return s.rateGOOGLEUSD;
   });
 }
 
@@ -229,7 +239,7 @@ function recomputeWithFee() {
       s.rateUSDTTRC20 = applyFee(s.baseRateUSDT, Number(s.feePercentUSDTTRC20) || 0, 2);
       s.rateUSDTERC20 = applyFee(s.baseRateUSDT, Number(s.feePercentUSDTERC20) || 0, 2);
     }
-    s.rateGOOGLEUSD = currencies.giftRateFromPercent(s.giftPercent);
+    s.rateGOOGLEUSD = currencies.giftRateFromPercent(s.giftPercent, s);
     return s;
   });
 }
@@ -261,6 +271,7 @@ module.exports = {
   startRates,
   refreshRates,
   recomputeWithFee,
+  recomputeGiftRate,
   applyFee,
   applyDiscount,
   fetchOfficial,

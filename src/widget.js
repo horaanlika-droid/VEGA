@@ -94,7 +94,7 @@ const ratesHtml = () =>
   '\'<div class="r"><span>₿ BTC</span><b>\'+g(d.bt)+\' ₽</b></div>\'+' +
   '\'<div class="r"><span>Ł LTC</span><b>\'+g(d.lt)+\' ₽</b></div>\'+' +
   '\'<div class="r"><span>₮ USDT TRC20</span><b>\'+(Number(d.u)||0).toFixed(2)+\' ₽</b></div>\'+' +
-  '\'<div class="r"><span><span class="gg">G</span> Google Gift</span><b>1 $ = \'+(Number(d.g)||0)+\' USDT</b></div>\'+' +
+  '\'<div class="r"><span>🎁 USD gift-карты</span><b>1 $ = \'+(Number(d.g)||0).toFixed(8)+\' BTC</b></div>\'+' +
   '\'<div class="s">\'+(d.on?"🟢 Онлайн":"🔴 Оффлайн")+\'</div>\';\n' +
   'document.getElementById("ex").addEventListener("click",function(){W.request("ex")});</script>';
 
@@ -108,7 +108,8 @@ const orderChatData = (o) => ({
   st: o.status,
   rub: Number(o.payRub || o.rub) || 0,
   cr: Number(o.crypto) || 0,
-  cu: isGiftOrder(o) ? 'USDT' : o.currency,
+  cu: isGiftOrder(o) ? currencies.payoutCurrencyOf(o) : o.currency,
+  lb: isGiftOrder(o) ? currencies.label(o.currency, o.network) : '',
   un: Number(o.units) || 0,
   gc: o.giftCode ? 1 : 0, // гифт: «Я оплатил» имеет смысл только при коде (старые заявки)
 });
@@ -125,7 +126,7 @@ const orderHtml = () =>
   'var L={new:"🔍 Подбор реквизитов",details:"💳 Ожидает оплаты",paid:"⏳ Подтверждение",completed:"🟢 Завершена",rejected:"🔴 Отклонена",cancelled:"⚪ Отменена"};\n' +
   'document.getElementById("i").textContent="#"+(d.id||"");\n' +
   'document.getElementById("st").textContent=L[d.st]||d.st||"";\n' +
-  'document.getElementById("sub").textContent=d.t==="gift"?("Google Gift Card $"+(d.un||0)+" → "+(d.cr||0)+" USDT"):(g(d.rub)+" ₽ → "+(d.cr||0)+" "+(d.cu||""));\n' +
+  'document.getElementById("sub").textContent=d.t==="gift"?((d.lb||"Gift Card")+" $"+(d.un||0)+" → "+(d.cr||0)+" "+(d.cu||"BTC")):(g(d.rub)+" ₽ → "+(d.cr||0)+" "+(d.cu||""));\n' +
   'var p=document.getElementById("paid");\n' +
   'var canPaid = d.t==="gift" ? (d.st==="new" && d.gc===1) : d.st==="details";\n' +
   'if(!canPaid){p.style.display="none"}\n' +
